@@ -46,6 +46,34 @@ Automatic sync of watched series and movies with MyShows.me
 - **Cross-device settings sync (NMSync)** — badges, sorting and other settings apply across all your devices automatically.  
 - **Manual sync with Lampac** — a "Sync" button for a one-time full reconciliation of watched content.  
 
+### Android TV home channel (optional)
+
+In MyShows settings, enable **MyShows на главном экране Android TV** to publish
+unwatched shows as a separate **MyShows** channel. This requires an Android TV
+Lampa build exposing `AndroidJS.publishPluginChannel` and
+`AndroidJS.clearPluginChannel`, plus a launcher that displays application channels
+(for example, Projectivy). Older APKs and browsers keep working and explain the
+unsupported capability in the setting.
+
+The switch defaults to off and is saved per profile on this device; it is not
+synced to other devices. The channel follows the selected MyShows sort order.
+Cards open the existing Lampa show page. Their description includes the next
+episode and unwatched count when available; stream availability and automatic
+episode playback are not implied.
+
+The existing cache appears first, then the successful fresh list replaces it.
+Publication updates while Lampa runs, after list refreshes and episode/status
+changes. When Lampa is closed, cards remain but new episodes wait for the next
+Lampa startup/refresh. A request error preserves the current profile's last
+successful list; a successful empty list clears it. Switching profiles, logging
+out, or disabling the switch immediately requests clearing the previous cards.
+If the native bridge rejects clearing, the plugin reports that failure instead
+of claiming the old cards were removed. Launcher channel visibility and row
+order are configured in the launcher. Favorites and Watch Next are separate.
+
+For reproducible release generation and regression tests, see
+[MyShows development](myshows-development.md).
+
 ⚙️ Plugin settings  
 - 🔐 Authentication via a proxy server (login/password are not stored in plain text) [myshows_proxy](https://github.com/Igorek1986/myshows_proxy)  
 - 🎚 Add-to-"Watching" threshold and watch-mark threshold  
