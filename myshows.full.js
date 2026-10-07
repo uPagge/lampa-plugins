@@ -363,13 +363,37 @@
     // profileId — профиль-источник запроса. Если запрос стартовал в профиле A,
     // а пользователь успел переключиться на B, данные всё равно лягут в кэш A.
     // Не передан → текущий профиль (backward-compat).
-    function saveCacheToServer(cacheData, path, callback, profileId, channelRequest) {
+    function saveCacheToServer(cacheData, path, callback, profileId, channelRequest, channelUpdate) {
         var mode = getStorageMode();
         if (profileId === undefined || profileId === null) profileId = getProfileId();
         // Data publication is independent of cache persistence. Async callers carry
         // the original generation so profile ABA/logout cannot restore old cards.
         if (path === 'unwatched_serials' && profileId === getProfileId() && cacheData) {
-            publishAndroidChannel(cacheData.shows, channelRequest || channelContext());
+            var publication = cacheData.shows;
+            // An episode change updates one show, not the entire list. NP reads
+            // can return only one page; retain unrelated already-published cards.
+            if (channelUpdate && _channelShows && channelContextCurrent(channelRequest)) {
+                publication = _channelShows.slice();
+                var previous = matchShowInArray(publication, channelUpdate.show);
+                var index = previous ? publication.indexOf(previous) : -1;
+                if (channelUpdate.remove) {
+                    if (index >= 0) publication.splice(index, 1);
+                } else {
+                    var updated = {};
+                    var key;
+                    if (previous) {
+                        for (key in previous) {
+                            if (previous.hasOwnProperty(key)) updated[key] = previous[key];
+                        }
+                    }
+                    for (key in channelUpdate.show) {
+                        if (channelUpdate.show.hasOwnProperty(key)) updated[key] = channelUpdate.show[key];
+                    }
+                    if (index >= 0) publication[index] = updated;
+                    else publication.push(updated);
+                }
+            }
+            publishAndroidChannel(publication, channelRequest || channelContext());
         }
         Log.info('Save', 'Cache: ', cacheData, 'Path:', path, 'Mode:', mode, 'Profile:', profileId);
 
@@ -1982,9 +2006,10 @@
     }
 
      // Получить непросмотренные серии
-    function fetchFromMyShowsAPI(callback) {
+    function fetchFromMyShowsAPI(callback, originalChannelRequest) {
         var startProfile = getProfileId();
-        var channelRequest = channelContext();
+        var channelRequest = originalChannelRequest || channelContext();
+        if (originalChannelRequest && !channelContextCurrent(originalChannelRequest)) return;
         makeMyShowsJSONRPCRequest('lists.EpisodesUnwatched', {}, function(success, response) {
             if (!response || !response.result) {
                 callback({ error: response ? response.error : 'Empty response' });
@@ -4199,6 +4224,13 @@
             var arr = result && result.shows;
             if (!arr) return;
             var show = matchShowInArray(arr, card);
+            // Completion removes the cached card. Undoing that mark needs the
+            // existing authoritative list once; ordinary marks stay local.
+            if (!show && !watched && channelSupported() && channelEnabled() &&
+                channelContextCurrent(channelRequest)) {
+                fetchFromMyShowsAPI(function() {}, channelRequest);
+                return;
+            }
             if (!show || !show.progress_marker || show.progress_marker.indexOf('/') === -1) return;
 
             var pp = show.progress_marker.split('/');
@@ -4230,7 +4262,8 @@
             if (watched && show.remaining <= 0) {
                 var idx = arr.indexOf(show);
                 if (idx > -1) arr.splice(idx, 1);
-                saveCacheToServer({ shows: arr }, 'unwatched_serials', function() {}, channelRequest.profile, channelRequest);
+                saveCacheToServer({ shows: arr }, 'unwatched_serials', function() {}, channelRequest.profile, channelRequest,
+                    { show: show, remove: true });
                 if (isSameFullCardOpen(card)) completeFullCardMarkers(card);
                 updateCompletedShowCard(showName, show.myshowsId);
                 return;
@@ -4241,7 +4274,8 @@
             var nextEp = computeNextUnwatchedEpisode(card);
             if (nextEp !== undefined) show.next_episode = nextEp; // undefined = нет метаданных, оставляем как было
 
-            saveCacheToServer({ shows: arr }, 'unwatched_serials', function() {}, channelRequest.profile, channelRequest);
+            saveCacheToServer({ shows: arr }, 'unwatched_serials', function() {}, channelRequest.profile, channelRequest,
+                { show: show, remove: false });
 
             if (isSameFullCardOpen(card)) updateFullCardMarkers(show);
             // Карточка в секции "Непросмотренные" (если открыта главная) — синхронно

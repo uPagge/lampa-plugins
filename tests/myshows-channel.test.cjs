@@ -239,3 +239,66 @@ test('logout rejects a pending episode-mark publication after token restoration'
 });
 
 module.exports = {launch, cards};
+
+test('unmark after completion restores the show through authoritative refresh', () => {
+    const card = {id:1,name:'Alpha',original_name:'Alpha',myshowsId:10,
+        remaining:1,progress_marker:'0/1',unwatchedEpisodes:[{id:101}]};
+    const app = launch({cards:[card], storage:{
+        myshows_serial_status_profile_a:{shows:[{id:10,title:'Alpha',watchStatus:'watching'}]},
+        myshows_hash_map:{'1:first':{tmdbId:1,episodeId:101,seasonNumber:1,
+            episodeNumber:1,airDate:'2020-01-01',timestamp:Date.now()}}
+    }});
+    app.run(50); app.emit('full',{type:'complite',data:{movie:card}}); app.emit('start',{card});
+    app.emit('update',{data:{hash:'first',road:{percent:100}}});
+    app.answer('manage.CheckEpisode',{result:true});
+    assert.equal(app.calls.at(-1).clear,'myshows');
+    app.emit('update',{data:{hash:'first',road:{percent:0}}});
+    app.answer('manage.UnCheckEpisode',{result:true});
+    app.answer('lists.EpisodesUnwatched',{result:[{show:{id:10,title:'Alpha',titleOriginal:'Alpha',year:2020},
+        episodes:[{id:101,seasonNumber:1,episodeNumber:1,shortName:'s01e01',airDate:'2020-01-01'}]}]});
+    app.answerUrl('search/tv',{results:[{id:1,name:'Alpha',original_name:'Alpha',first_air_date:'2020-01-01'}]});
+    app.answerUrl('/tv/1?',{id:1,name:'Alpha',original_name:'Alpha',first_air_date:'2020-01-01',seasons:[{season_number:1}]});
+    app.answer('shows.GetById',{result:{episodes:[{id:101,seasonNumber:1,episodeNumber:1,airDate:'2020-01-01'}]}});
+    assert.deepEqual(app.calls.at(-1).publish.items.map(c => c.id),['1']);
+    assert.match(app.calls.at(-1).publish.items[0].overview,/S01\/E01/);
+});
+
+test('local episode update from partial NP cache preserves unrelated published shows', () => {
+    const first = {id:1,name:'Alpha',original_name:'Alpha',myshowsId:10,remaining:2,
+        progress_marker:'0/2',unwatchedEpisodes:[{id:101},{id:102}]};
+    const other = {id:2,name:'Zulu',original_name:'Zulu',myshowsId:20,remaining:1};
+    const app = launch({np:true,storage:{myshows_hash_map:{'1:first':{tmdbId:1,episodeId:101,
+        seasonNumber:1,episodeNumber:1,airDate:'2020-01-01',timestamp:Date.now()}}}});
+    app.run(50); app.answerUrl('/myshows/watching?',{results:[first,other]});
+    assert.deepEqual(app.calls.at(-1).publish.items.map(c => c.id),['1','2']);
+    app.emit('full',{type:'complite',data:{movie:first}});
+    app.answerUrl('/myshows/watching?',{results:[first,other]});
+    app.answerUrl('/myshows/status?',{cache_type:'watching'});
+    app.emit('start',{card:first}); app.emit('update',{data:{hash:'first',road:{percent:100}}});
+    app.answer('manage.CheckEpisode',{result:true});
+    assert.equal(app.requests.filter(r => r.body?.method === 'lists.EpisodesUnwatched').length,0);
+    app.answerUrl('/myshows/watching?',{results:[first],page:1,total_pages:2});
+    assert.deepEqual(app.calls.at(-1).publish.items.map(c => c.id),['1','2']);
+    assert.match(app.calls.at(-1).publish.items[0].overview,/Unwatched: 1/);
+});
+
+test('logout invalidates the authoritative unmark fallback response', () => {
+    const card = {id:1,name:'Alpha',original_name:'Alpha',myshowsId:10,
+        remaining:1,progress_marker:'0/1',unwatchedEpisodes:[{id:101}]};
+    const app = launch({cards:[card],storage:{
+        myshows_serial_status_profile_a:{shows:[{id:10,title:'Alpha',watchStatus:'watching'}]},
+        myshows_hash_map:{'1:first':{tmdbId:1,episodeId:101,seasonNumber:1,
+            episodeNumber:1,airDate:'2020-01-01',timestamp:Date.now()}}
+    }});
+    app.run(50); app.run(2000); app.emit('full',{type:'complite',data:{movie:card}});
+    app.emit('start',{card}); app.emit('update',{data:{hash:'first',road:{percent:100}}});
+    app.answer('manage.CheckEpisode',{result:true});
+    app.emit('update',{data:{hash:'first',road:{percent:0}}});
+    app.answer('manage.UnCheckEpisode',{result:true});
+    assert.ok(app.requests.some(r => r.body?.method === 'lists.EpisodesUnwatched'));
+    app.params.find(p => p.field.name === 'Выйти из MyShows').onChange();
+    app.data.set('myshows_token_profile_a','test-token');
+    const count = app.calls.length;
+    app.answer('lists.EpisodesUnwatched',{result:[]});
+    assert.equal(app.calls.length,count,'old fallback cannot touch the current generation');
+});

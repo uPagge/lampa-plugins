@@ -62,6 +62,12 @@ and local episode changes are notified through `saveCacheToServer` only for
 `unwatched_serials`. Publication does not wait for cache-write success. The
 calendar's one-shot `_fireUnwatchedSaved` remains independent.
 
+Local episode changes patch the latest accepted channel snapshot, preserving
+unrelated shows if an NP cache read supplies only one page. A completed show is
+removed only from that snapshot. Undoing completion can encounter an absent
+cached card; only this cache-miss case requests the existing authoritative
+MyShows list again. Its original generation remains attached to the request.
+
 Async callers capture profile, authorization token and a generation before the
 request. Profile changes, logout and disabling advance the generation, preventing
 late responses from restoring cards even after switching A → B → A or restoring

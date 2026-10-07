@@ -288,11 +288,32 @@
     function useNpServer() {
         return getStorageMode() === "np";
     }
-    function saveCacheToServer(cacheData, path, callback, profileId, channelRequest) {
+    function saveCacheToServer(cacheData, path, callback, profileId, channelRequest, channelUpdate) {
         var mode = getStorageMode();
         if (profileId === undefined || profileId === null) profileId = getProfileId();
         if (path === "unwatched_serials" && profileId === getProfileId() && cacheData) {
-            publishAndroidChannel(cacheData.shows, channelRequest || channelContext());
+            var publication = cacheData.shows;
+            if (channelUpdate && _channelShows && channelContextCurrent(channelRequest)) {
+                publication = _channelShows.slice();
+                var previous = matchShowInArray(publication, channelUpdate.show);
+                var index = previous ? publication.indexOf(previous) : -1;
+                if (channelUpdate.remove) {
+                    if (index >= 0) publication.splice(index, 1);
+                } else {
+                    var updated = {};
+                    var key;
+                    if (previous) {
+                        for (key in previous) {
+                            if (previous.hasOwnProperty(key)) updated[key] = previous[key];
+                        }
+                    }
+                    for (key in channelUpdate.show) {
+                        if (channelUpdate.show.hasOwnProperty(key)) updated[key] = channelUpdate.show[key];
+                    }
+                    if (index >= 0) publication[index] = updated; else publication.push(updated);
+                }
+            }
+            publishAndroidChannel(publication, channelRequest || channelContext());
         }
         Log.info("Save", "Cache: ", cacheData, "Path:", path, "Mode:", mode, "Profile:", profileId);
         var NP_PATHS = {
@@ -1662,9 +1683,10 @@
             }
         });
     }
-    function fetchFromMyShowsAPI(callback) {
+    function fetchFromMyShowsAPI(callback, originalChannelRequest) {
         var startProfile = getProfileId();
-        var channelRequest = channelContext();
+        var channelRequest = originalChannelRequest || channelContext();
+        if (originalChannelRequest && !channelContextCurrent(originalChannelRequest)) return;
         makeMyShowsJSONRPCRequest("lists.EpisodesUnwatched", {}, function(success, response) {
             if (!response || !response.result) {
                 callback({
@@ -3356,6 +3378,10 @@
             var arr = result && result.shows;
             if (!arr) return;
             var show = matchShowInArray(arr, card);
+            if (!show && !watched && channelSupported() && channelEnabled() && channelContextCurrent(channelRequest)) {
+                fetchFromMyShowsAPI(function() {}, channelRequest);
+                return;
+            }
             if (!show || !show.progress_marker || show.progress_marker.indexOf("/") === -1) return;
             var pp = show.progress_marker.split("/");
             var watchedCount = parseInt(pp[0], 10);
@@ -3379,7 +3405,10 @@
                 if (idx > -1) arr.splice(idx, 1);
                 saveCacheToServer({
                     shows: arr
-                }, "unwatched_serials", function() {}, channelRequest.profile, channelRequest);
+                }, "unwatched_serials", function() {}, channelRequest.profile, channelRequest, {
+                    show: show,
+                    remove: true
+                });
                 if (isSameFullCardOpen(card)) completeFullCardMarkers(card);
                 updateCompletedShowCard(showName, show.myshowsId);
                 return;
@@ -3388,7 +3417,10 @@
             if (nextEp !== undefined) show.next_episode = nextEp;
             saveCacheToServer({
                 shows: arr
-            }, "unwatched_serials", function() {}, channelRequest.profile, channelRequest);
+            }, "unwatched_serials", function() {}, channelRequest.profile, channelRequest, {
+                show: show,
+                remove: false
+            });
             if (isSameFullCardOpen(card)) updateFullCardMarkers(show);
             updateAllMyShowsCards(showName, show.myshowsId, show.progress_marker, show.next_episode, show.remaining);
             var act = Lampa.Activity.active && Lampa.Activity.active();
