@@ -106,6 +106,89 @@
     // сверяют захваченный токен, чтобы не вставлять данные предыдущего профиля.
     var _profileRenderToken = 0;
 
+    // Device-local opt-in, per profile. Native booleans acknowledge enqueue,
+    // not completion of a TvProvider write.
+    var _channelGeneration = 0;
+    var _channelShows = null;
+
+    function channelSupported() {
+        return window.AndroidJS &&
+            typeof window.AndroidJS.publishPluginChannel === 'function' &&
+            typeof window.AndroidJS.clearPluginChannel === 'function';
+    }
+
+    function channelEnabled() {
+        var enabled = getProfileSetting('myshows_android_tv', false);
+        return enabled === true || enabled === 'true';
+    }
+
+    function channelContext() {
+        return { generation: _channelGeneration, profile: getProfileId(),
+            token: getProfileSetting('myshows_token', '') };
+    }
+
+    function channelContextCurrent(context) {
+        return context && context.generation === _channelGeneration &&
+            context.profile === getProfileId() && context.token &&
+            context.token === getProfileSetting('myshows_token', '');
+    }
+
+    function clearAndroidChannel(notify) {
+        if (!channelSupported()) return;
+        try {
+            if (window.AndroidJS.clearPluginChannel('myshows') === true) return;
+        } catch (e) { /* Some native implementations throw instead of returning false. */ }
+        Log.warn('Android TV channel clear rejected');
+        if (notify) Lampa.Noty.show('Android TV: не удалось очистить канал MyShows');
+    }
+
+    function invalidateAndroidChannel(notify) {
+        _channelGeneration++;
+        _channelShows = null;
+        clearAndroidChannel(notify);
+    }
+
+    function publishAndroidChannel(shows, context) {
+        if (!channelSupported() || !channelEnabled() || !channelContextCurrent(context) ||
+            !Array.isArray(shows)) return;
+        var sorted = shows.slice();
+        sortShows(sorted, getProfileSetting('myshows_sort_order', 'progress'));
+        var items = [];
+        // Explicit allowlist: cached cards may contain unrelated/private properties.
+        var fields = ['name', 'title', 'original_name', 'original_title', 'poster_path',
+            'backdrop_path', 'first_air_date', 'release_date', 'release_year', 'vote_average'];
+        sorted.forEach(function(show) {
+            if (!show || !show.id || !(show.name || show.title)) return;
+            var item = { id: String(show.id), source: 'tmdb', type: 'tv' };
+            fields.forEach(function(key) {
+                if (typeof show[key] === 'string' || typeof show[key] === 'number') item[key] = show[key];
+            });
+            var description = typeof show.overview === 'string' ? show.overview : '';
+            var details = [];
+            if (show.next_episode) details.push('Next: ' + show.next_episode);
+            var remaining = show.remaining !== undefined ? show.remaining : show.unwatched_count;
+            if (typeof remaining === 'number' && remaining >= 0) details.push('Unwatched: ' + remaining);
+            item.overview = description + (description && details.length ? '\n' : '') + details.join(' · ');
+            items.push(item);
+        });
+        // A malformed nonempty list is not a successful empty result.
+        if (shows.length && !items.length) return;
+        if (!shows.length) {
+            _channelShows = [];
+            clearAndroidChannel(false);
+            return;
+        }
+        try {
+            if (window.AndroidJS.publishPluginChannel(JSON.stringify({
+                id: 'myshows', title: 'MyShows', items: items
+            })) === true) {
+                _channelShows = sorted;
+                return;
+            }
+        } catch (e) { /* Preserve the last successful list on a native rejection. */ }
+        Log.warn('Android TV channel publish rejected');
+    }
+
     function getNpBaseUrl() {
         return Lampa.Storage.get('base_url_numparser', '');
     }
@@ -280,9 +363,14 @@
     // profileId — профиль-источник запроса. Если запрос стартовал в профиле A,
     // а пользователь успел переключиться на B, данные всё равно лягут в кэш A.
     // Не передан → текущий профиль (backward-compat).
-    function saveCacheToServer(cacheData, path, callback, profileId) {
+    function saveCacheToServer(cacheData, path, callback, profileId, channelRequest) {
         var mode = getStorageMode();
         if (profileId === undefined || profileId === null) profileId = getProfileId();
+        // Data publication is independent of cache persistence. Async callers carry
+        // the original generation so profile ABA/logout cannot restore old cards.
+        if (path === 'unwatched_serials' && profileId === getProfileId() && cacheData) {
+            publishAndroidChannel(cacheData.shows, channelRequest || channelContext());
+        }
         Log.info('Save', 'Cache: ', cacheData, 'Path:', path, 'Mode:', mode, 'Profile:', profileId);
 
         var NP_PATHS = {
@@ -561,9 +649,12 @@
         // не должен вставлять карточки предыдущего профиля.
         var renderToken = _profileRenderToken;
 
+        var channelRequest = channelContext();
+
         loadCacheFromServer('unwatched_serials', 'shows', function(cachedResult) {
             if (renderToken !== _profileRenderToken) return;
             var cachedShows = cachedResult && cachedResult.shows;
+            if (cachedShows) publishAndroidChannel(cachedShows, channelRequest);
             // Сидим in-memory set непросмотренных серий из кэша СРАЗУ (local/Storage, Lampac/файл,
             // NP/БД — все теперь хранят id серий) — чтобы на холодном старте уже знать серии,
             // не дожидаясь fetchFromMyShowsAPI (он обновит через updateDelay).
@@ -817,6 +908,9 @@
 
     function setProfileSetting(key, value, sync) {
         value = storableValue(value);
+        if (key === 'myshows_token' && !value && getProfileSetting(key, '')) {
+            invalidateAndroidChannel(true);
+        }
         Lampa.Storage.set(getProfileKey(key), value);
         if (sync !== false && !_syncApplying && window.__NMSync) window.__NMSync.patch('myshows', getProfileKey(key), value);
     }
@@ -835,6 +929,7 @@
         if (getProfileKey(base) === profileKey) {
             Lampa.Storage.set(base, value, true);
             if (base === 'myshows_badge_style') applyBadgeStyleAttr();
+            if (base === 'myshows_token' && !value) invalidateAndroidChannel(true);
         }
         _syncApplying = false;
     }
@@ -1035,6 +1130,22 @@
         autoSetupToken();
         var tokenValue = getProfileSetting('myshows_token', '');
 
+        Lampa.SettingsApi.addParam({
+            component: 'myshows',
+            param: { name: 'myshows_android_tv', type: 'trigger',
+                default: getProfileSetting('myshows_android_tv', false) },
+            field: { name: 'MyShows на главном экране Android TV',
+                description: channelSupported() ?
+                    'Публиковать непросмотренные сериалы отдельным каналом. Обновляется, пока работает Lampa.' :
+                    'Нужна версия Lampa для Android TV с поддержкой каналов плагинов. Текущая версия не поддерживает публикацию.' },
+            onChange: function(value) {
+                setProfileSetting('myshows_android_tv', value, false);
+                if (!channelEnabled()) invalidateAndroidChannel(true);
+                else if (channelSupported()) initMyShowsCaches();
+                else Lampa.Noty.show('Нужна Lampa для Android TV с поддержкой каналов плагинов');
+            }
+        });
+
         if (tokenValue) {
             Lampa.SettingsApi.addParam({
                 component: 'myshows',
@@ -1090,6 +1201,7 @@
                 },
                 onChange: function(value) {
                     setProfileSetting('myshows_sort_order', value);
+                    if (_channelShows) publishAndroidChannel(_channelShows, channelContext());
                     cachedShuffledItems = {};
                     setTimeout(function() {
                         var activity = Lampa.Activity.active();
@@ -1404,6 +1516,7 @@
 
         // Инвалидируем все незавершённые async-рендеры предыдущего профиля
         _profileRenderToken++;
+        invalidateAndroidChannel(true);
 
         Log.info('🔄 Profile changed to:', newProfileId);
 
@@ -1871,6 +1984,7 @@
      // Получить непросмотренные серии
     function fetchFromMyShowsAPI(callback) {
         var startProfile = getProfileId();
+        var channelRequest = channelContext();
         makeMyShowsJSONRPCRequest('lists.EpisodesUnwatched', {}, function(success, response) {
             if (!response || !response.result) {
                 callback({ error: response ? response.error : 'Empty response' });
@@ -2005,7 +2119,7 @@
                         // долетели до бэкенда — теперь можно снова доверять cachedShows.
                         if (ok) _skipCachedShowsOnce = false;
                         _fireUnwatchedSaved(result.shows);
-                    }, startProfile);
+                    }, startProfile, channelRequest);
 
                     // In-memory карта прогресса — только если профиль не сменился
                     if (sameProfile) _populateProgressMap(result.shows);
@@ -4078,6 +4192,7 @@
     // в кэш и, если открыта та же карточка, обновляем бейджи. watched=true — серия отмечена.
     function applyEpisodeMarkLocally(card, episodeId, watched) {
         episodeId = parseInt(episodeId);
+        var channelRequest = channelContext();
         // _unwatchedEpisodeIds уже обновлён вызывающим → сразу обновляем галочки на сериях.
         scheduleEpisodeBadgeDecorate();
         loadCacheFromServer('unwatched_serials', 'shows', function(result) {
@@ -4115,7 +4230,7 @@
             if (watched && show.remaining <= 0) {
                 var idx = arr.indexOf(show);
                 if (idx > -1) arr.splice(idx, 1);
-                saveCacheToServer({ shows: arr }, 'unwatched_serials', function() {}, getProfileId());
+                saveCacheToServer({ shows: arr }, 'unwatched_serials', function() {}, channelRequest.profile, channelRequest);
                 if (isSameFullCardOpen(card)) completeFullCardMarkers(card);
                 updateCompletedShowCard(showName, show.myshowsId);
                 return;
@@ -4126,7 +4241,7 @@
             var nextEp = computeNextUnwatchedEpisode(card);
             if (nextEp !== undefined) show.next_episode = nextEp; // undefined = нет метаданных, оставляем как было
 
-            saveCacheToServer({ shows: arr }, 'unwatched_serials', function() {}, getProfileId());
+            saveCacheToServer({ shows: arr }, 'unwatched_serials', function() {}, channelRequest.profile, channelRequest);
 
             if (isSameFullCardOpen(card)) updateFullCardMarkers(show);
             // Карточка в секции "Непросмотренные" (если открыта главная) — синхронно
@@ -8525,6 +8640,7 @@
             if (IS_LAMPAC) Log.info('✅ Среда: Lampac');
             // initCurrentProfile синхронно — не зависит от пинга
             initCurrentProfile();
+            if (!channelEnabled() || !getProfileSetting('myshows_token', '')) clearAndroidChannel(false);
             // Вариант меток применяем сразу, не дожидаясь initSettings (он через
             // 2с после пинга) — иначе при старте мигает первый вариант
             applyBadgeStyleAttr();
