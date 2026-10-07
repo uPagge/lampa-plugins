@@ -78,7 +78,8 @@ function launch(options = {}) {
         assert.notEqual(i,-1,'requested ' + method); requests.splice(i,1)[0].success(response);};
     const answerUrl = (text, response) => {const i = requests.findIndex(r => r.url.includes(text));
         assert.notEqual(i,-1,'requested URL ' + text); requests.splice(i,1)[0].success(response);};
-    return {context, data, calls, requests, timers, run, setting, params, answer, answerUrl, changeProfile, notices};
+    const emit = (name, data) => (handlers[name] || []).forEach(fn => fn(data));
+    return {context, data, calls, requests, timers, run, setting, params, answer, answerUrl, changeProfile, notices, emit};
 }
 
 const cards = [
@@ -190,6 +191,51 @@ test('disable then enable rejects an old refresh even for the same profile', () 
     app.answer('lists.EpisodesUnwatched',{result: []});
     assert.equal(app.calls.length,count);
     assert.deepEqual(app.calls.at(-1).publish.items.map(c => c.id),['1','2']);
+});
+
+test('episode mark and unmark republish next episode and completed show clears', () => {
+    const card = {id:1, name:'Alpha', original_name:'Alpha', poster_path:'/a.jpg', myshowsId:10,
+        remaining:2, watched_count:0, total_count:2, progress_marker:'0/2', next_episode:'S01/E01',
+        unwatchedEpisodes:[{id:101},{id:102}]};
+    const app = launch({cards:[card], storage:{
+        myshows_serial_status_profile_a:{shows:[{id:10,title:'Alpha',titleOriginal:'Alpha',watchStatus:'watching'}]},
+        myshows_hash_map:{
+            '1:first':{tmdbId:1,episodeId:101,seasonNumber:1,episodeNumber:1,airDate:'2020-01-01',timestamp:Date.now()},
+            '1:second':{tmdbId:1,episodeId:102,seasonNumber:1,episodeNumber:2,airDate:'2020-01-02',timestamp:Date.now()}
+        }
+    }});
+    app.run(50); app.emit('full',{type:'complite',data:{movie:card}});
+    app.emit('start',{card});
+    app.emit('update',{data:{hash:'first',road:{percent:100}}});
+    app.answer('manage.CheckEpisode',{result:true});
+    assert.match(app.calls.at(-1).publish.items[0].overview,/S01\/E02/);
+    assert.match(app.calls.at(-1).publish.items[0].overview,/Unwatched: 1/);
+    app.emit('update',{data:{hash:'first',road:{percent:0}}});
+    app.answer('manage.UnCheckEpisode',{result:true});
+    assert.match(app.calls.at(-1).publish.items[0].overview,/S01\/E01/);
+    assert.match(app.calls.at(-1).publish.items[0].overview,/Unwatched: 2/);
+    app.emit('update',{data:{hash:'first',road:{percent:100}}});
+    app.answer('manage.CheckEpisode',{result:true});
+    app.emit('update',{data:{hash:'second',road:{percent:100}}});
+    app.answer('manage.CheckEpisode',{result:true});
+    assert.equal(app.calls.at(-1).clear,'myshows');
+});
+
+test('logout rejects a pending episode-mark publication after token restoration', () => {
+    const card = {id:1,name:'Alpha',original_name:'Alpha',myshowsId:10,
+        remaining:2,progress_marker:'0/2',unwatchedEpisodes:[{id:101},{id:102}]};
+    const app = launch({cards:[card], storage:{
+        myshows_serial_status_profile_a:{shows:[{id:10,title:'Alpha',watchStatus:'watching'}]},
+        myshows_hash_map:{'1:first':{tmdbId:1,episodeId:101,seasonNumber:1,
+            episodeNumber:1,airDate:'2020-01-01',timestamp:Date.now()}}
+    }});
+    app.run(50); app.run(2000); app.emit('full',{type:'complite',data:{movie:card}});
+    app.emit('start',{card}); app.emit('update',{data:{hash:'first',road:{percent:100}}});
+    app.params.find(p => p.field.name === 'Выйти из MyShows').onChange();
+    app.data.set('myshows_token_profile_a','test-token');
+    const count = app.calls.length;
+    app.answer('manage.CheckEpisode',{result:true});
+    assert.equal(app.calls.length,count,'late episode mark cannot restore cleared cards');
 });
 
 module.exports = {launch, cards};

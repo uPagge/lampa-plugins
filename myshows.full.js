@@ -2677,6 +2677,7 @@
         var hash = data.data.hash;
         var percent = data.data.road.percent;
         var token = getProfileSetting('myshows_token', '');
+        var channelRequest = channelContext();
         var minProgress = parseInt(getProfileSetting('myshows_min_progress', DEFAULT_MIN_PROGRESS));
         var addThreshold = parseInt(getProfileSetting('myshows_add_threshold', DEFAULT_ADD_THRESHOLD));
 
@@ -2740,7 +2741,7 @@
                         var newEntry = newMap[mapKey];
                         var newEpisodeId = newEntry && newEntry.episodeId ? newEntry.episodeId : newEntry;
                         if (newEpisodeId) {
-                            processEpisode(newEpisodeId, hash, percent, card, token, minProgress, addThreshold, newEntry && newEntry.airDate);
+                            processEpisode(newEpisodeId, hash, percent, card, token, minProgress, addThreshold, newEntry && newEntry.airDate, channelRequest);
                         } else {
                             Log.info('Нет newEpisodeId — ищем в EPISODES_CACHE');
                             var episodes_hash = EPISODES_CACHE[tmdbKey] || EPISODES_CACHE[card.original_name || card.original_title || card.title];
@@ -2759,7 +2760,7 @@
                             }
 
                             if (episodeId) {
-                                processEpisode(episodeId, hash, percent, card, token, minProgress, addThreshold, hitAirDate);
+                                processEpisode(episodeId, hash, percent, card, token, minProgress, addThreshold, hitAirDate, channelRequest);
                             } else {
                                 Log.warn('❌ Не найден episodeId даже в EPISODES_CACHE для хеша:', hash);
                             }
@@ -2769,7 +2770,7 @@
                 }
                  Log.info('CheckEpisode episodeId', episodeId);
 
-                processEpisode(episodeId, hash, percent, card, token, minProgress, addThreshold, airDate);
+                processEpisode(episodeId, hash, percent, card, token, minProgress, addThreshold, airDate, channelRequest);
             });
         }
     }
@@ -2790,7 +2791,7 @@
         return d.getTime() >= today.getTime();
     }
 
-    function processEpisode(episodeId, hash, percent, card, token, minProgress, addThreshold, airDate) {
+    function processEpisode(episodeId, hash, percent, card, token, minProgress, addThreshold, airDate, channelRequest) {
 
         var originalName = card.original_name || card.original_title || card.title;
         var firstEpisodeHash = Lampa.Utils.hash('11' + originalName);
@@ -2821,7 +2822,7 @@
                     delete checkedEpisodes[episodeId];
                     _unwatchedEpisodeIds[parseInt(episodeId)] = true; // снова непросмотрена
                     Log.info('[MS-guard] ✅ episodeId ' + episodeId + ' отметка снята');
-                    applyEpisodeMarkLocally(card, episodeId, false);
+                    applyEpisodeMarkLocally(card, episodeId, false, channelRequest);
                 });
             });
             return;
@@ -2865,7 +2866,7 @@
                     if (!alreadyWatching) {
                         ensureWatchingStatus(card, 'отметка серии при статусе "' + currentStatus + '"', function() {});
                     }
-                    applyEpisodeMarkLocally(card, episodeId, true);
+                    applyEpisodeMarkLocally(card, episodeId, true, channelRequest);
                 });
             };
 
@@ -4190,9 +4191,8 @@
     // к серверу (lists.EpisodesUnwatched обновляется не мгновенно и давал прогресс «назад»).
     // Базовые числа берём из кэша (а не из DOM, который мог отстать), пишем результат обратно
     // в кэш и, если открыта та же карточка, обновляем бейджи. watched=true — серия отмечена.
-    function applyEpisodeMarkLocally(card, episodeId, watched) {
+    function applyEpisodeMarkLocally(card, episodeId, watched, channelRequest) {
         episodeId = parseInt(episodeId);
-        var channelRequest = channelContext();
         // _unwatchedEpisodeIds уже обновлён вызывающим → сразу обновляем галочки на сериях.
         scheduleEpisodeBadgeDecorate();
         loadCacheFromServer('unwatched_serials', 'shows', function(result) {
