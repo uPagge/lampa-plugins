@@ -67,6 +67,7 @@ function launch(options = {}) {
         data.set('myshows_use_np_profile_a','true');
         data.set('base_url_numparser','https://np.invalid');
         data.set('numparser_api_key','test-np-token');}
+    if (options.sync) context.__NMSync = {patch(){}, register(name, keys, apply) {context.applySync = apply;}};
     context.window = context;
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', options.variant || process.env.MYSHOWS_VARIANT || 'myshows.full.js'), 'utf8'), context);
     const run = delay => {const i = timers.findIndex(t => t.delay === delay);
@@ -305,9 +306,9 @@ test('logout invalidates the authoritative unmark fallback response', () => {
 
 // A missing history fetch/comparator, cache reuse, or generation guard breaks these tests.
 const relevanceCards = [
-    {id:1,name:'Alpha',myshowsId:10,last_episode_to_myshows:{air_date:'2020-01-01'}},
+    {id:3,name:'Alpha',myshowsId:30},
     {id:2,name:'Bravo',myshowsId:20,last_episode_to_myshows:{air_date:'2020-01-03'}},
-    {id:3,name:'Charlie',myshowsId:30},
+    {id:1,name:'Zulu',myshowsId:10,last_episode_to_myshows:{air_date:'2020-01-01'}},
     {id:4,name:'Delta',myshowsId:40,last_episode_to_myshows:{air_date:'2999-01-01'}},
     {id:5,name:'Echo',myshowsId:50,last_episode_to_myshows:{air_date:'2020-02-30'}}
 ];
@@ -371,7 +372,7 @@ test('relevance logout ignores history after restoring the same token', () => {
     const count=app.calls.length;
     answerHistory(app,10,history('2020-01-04')); answerHistory(app,20,history(null));
     assert.equal(app.calls.length,count);
-    assert.equal(app.data.get('myshows_relevance_history_profile_a')[10]?.watch,undefined);
+    assert.equal(app.data.get('myshows_relevance_history_profile_a')?.[10]?.watch,undefined);
 });
 test('successful mark raises relevance then unmark refetches and restores older date', () => {
     const card={id:1,name:'Alpha',original_name:'Alpha',myshowsId:10,remaining:2,
@@ -414,4 +415,80 @@ test('relevance startup loads history even without an Android bridge', () => {
     const app=launch({cards,bridge:'missing',storage:{myshows_sort_order_profile_a:'relevance'}});
     app.run(50);
     assert.equal(app.requests.filter(r=>r.body?.method==='profile.Episodes').length,2);
+});
+
+test('logout clears private viewing dates before another MyShows account uses the profile', () => {
+    const app=launch({cards,storage:{myshows_relevance_history_profile_a:{10:{watch:1578096000000,checked:Date.now()}}}});
+    app.run(2000); app.params.find(p=>p.field.name==='Выйти из MyShows').onChange();
+    assert.deepEqual(Object.keys(app.data.get('myshows_relevance_history_profile_a')),[]);
+});
+test('successful mark without MyShows id records matched cached history with Android off', () => {
+    const card={id:1,name:'Alpha',original_name:'Alpha',myshowsId:10,remaining:2,
+        progress_marker:'0/2',unwatchedEpisodes:[{id:101},{id:102}]};
+    const app=launch({cards:[card],storage:{myshows_android_tv_profile_a:'false',
+        myshows_serial_status_profile_a:{shows:[{id:10,title:'Alpha',watchStatus:'watching'}]},
+        myshows_hash_map:{'1:first':{tmdbId:1,episodeId:101,seasonNumber:1,episodeNumber:1,
+            airDate:'2020-01-01',timestamp:Date.now()}}}});
+    const playerCard={id:1,name:'Alpha',original_name:'Alpha'};
+    app.run(50); app.emit('full',{type:'complite',data:{movie:playerCard}}); app.emit('start',{card:playerCard});
+    app.emit('update',{data:{hash:'first',road:{percent:100}}});
+    app.answer('manage.CheckEpisode',{result:true});
+    assert.ok(app.data.get('myshows_relevance_history_profile_a')?.[10]?.watch > 1578096000000);
+});
+
+test('ordinary NP list callback still completes when MyShows has no token', () => {
+    const app=launch({np:true,storage:{myshows_token_profile_a:''}});
+    let result; app.context.MyShows.getUnwatchedShowsWithDetails(value=>result=value);
+    assert.ok(result, 'no-token response completes');
+    assert.deepEqual(Array.from(result.shows),[]);
+});
+test('NP id-only episode arrays do not erase a known release date', () => {
+    const app=launch({np:true,storage:{myshows_sort_order_profile_a:'relevance',
+        myshows_relevance_history_profile_a:{10:{release:1578009600000,checked:Date.now()},
+            20:{release:1578096000000,checked:Date.now()}}}});
+    app.run(50); app.answerUrl('/myshows/watching?',{results:[
+        {...cards[0],unwatched_episodes:[201]},{...cards[1],unwatched_episodes:[101]}]});
+    assert.deepEqual(app.calls.at(-1).publish.items.map(c=>c.id),['2','1']);
+});
+
+test('relevance NP list callback completes an unauthenticated empty result', () => {
+    const app=launch({np:true,storage:{myshows_token_profile_a:'',myshows_sort_order_profile_a:'relevance'}});
+    let result; app.context.MyShows.getUnwatchedShowsWithDetails(value=>result=value);
+    assert.ok(result,'empty response completes');
+    assert.deepEqual(Array.from(result.shows),[]);
+});
+
+test('synced replacement token clears private history for its target profile', () => {
+    const app=launch({sync:true,cards,storage:{myshows_relevance_history_profile_a:{10:{watch:1578096000000}}}});
+    app.context.applySync('myshows_token_profile_a','another-account');
+    assert.deepEqual(Object.keys(app.data.get('myshows_relevance_history_profile_a')),[]);
+});
+test('completed show undo refreshes history with Android channel off', () => {
+    const card={id:1,name:'Alpha',original_name:'Alpha',myshowsId:10,remaining:1,
+        progress_marker:'0/1',unwatchedEpisodes:[{id:101}]};
+    const app=launch({cards:[card],storage:{myshows_sort_order_profile_a:'relevance',myshows_android_tv_profile_a:'false',
+        myshows_serial_status_profile_a:{shows:[{id:10,title:'Alpha',watchStatus:'watching'}]},
+        myshows_hash_map:{'1:first':{tmdbId:1,episodeId:101,seasonNumber:1,episodeNumber:1,
+            airDate:'2020-01-01',timestamp:Date.now()}}}});
+    app.run(50); answerHistory(app,10,history(null));
+    app.emit('full',{type:'complite',data:{movie:card}}); app.emit('start',{card});
+    app.emit('update',{data:{hash:'first',road:{percent:100}}}); app.answer('manage.CheckEpisode',{result:true});
+    app.emit('update',{data:{hash:'first',road:{percent:0}}}); app.answer('manage.UnCheckEpisode',{result:true});
+    answerHistory(app,10,history(null));
+    assert.equal(app.data.get('myshows_relevance_history_profile_a')[10].watch,0);
+});
+
+test('DOM cards with older metadata follow the fresh relevance channel order', () => {
+    const fresh=[{id:1,name:'Alpha',myshowsId:10,last_episode_to_myshows:{air_date:'2020-01-04'}},
+        {id:2,name:'Bravo',myshowsId:20,last_episode_to_myshows:{air_date:'2020-01-03'}}];
+    const app=launch({cards:fresh,storage:{myshows_sort_order_profile_a:'relevance',
+        myshows_relevance_history_profile_a:{10:{checked:Date.now()},20:{checked:Date.now()}}}});
+    const elements=fresh.map(c=>({card_data:JSON.parse(JSON.stringify(c)),classList:{contains:()=>true}}));
+    elements[0].card_data.last_episode_to_myshows.air_date='2020-01-01';
+    const order=[],container={children:elements,appendChild:e=>order.push(e.card_data.id)};
+    elements.forEach(e=>e.parentNode=container);
+    const section={querySelectorAll:()=>elements,querySelector:()=>null};
+    app.context.document.querySelectorAll=q=>q==='.items-line__title'?[{textContent:'MyShows',closest:()=>section}]:[];
+    app.run(50);
+    assert.deepEqual(order,[1,2]);
 });

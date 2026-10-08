@@ -96,7 +96,11 @@ Successful empty arrays clear the date. The newest released unwatched episode
 comes from existing MyShows episode metadata; known release dates survive NP
 cards that omit it. Local successful marks invalidate older pending history
 responses. Undo invalidates the history cache. Profile/token/generation guards
-reject responses after logout or profile ABA. The Android metadata allowlist
+reject responses after logout or profile ABA. A changed authorization token,
+including automatic renewal and synchronized replacement, clears local history
+and the channel. Without verified account identity this prevents reusing another
+account's private dates in the same Lampa profile. The next ordinary list refresh
+restores current data. The Android metadata allowlist
 stays unchanged.
 
 VM tests cover merged ordering, alphabetical ties, malformed/future dates,
