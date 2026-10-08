@@ -78,3 +78,28 @@ successful empty lists do. Malformed nonempty lists are not interpreted as empty
 The regression suite covers these boundaries and sorting. It does not prove
 Android TvProvider persistence, provider permissions, launcher visibility,
 deep-link navigation or playback on real hardware; those need APK/device checks.
+
+## Relevance history contract
+
+The opt-in `relevance` mode uses `profile.Episodes({showId})` and the maximum
+valid `watchDate` in its episode summaries. The public MyShows Swagger schema
+(`https://api.myshows.me/shared/doc/swagger.json`, API version 2.0.2) documents
+`watchDate` as a string without a format. The plugin already uses this method
+through its existing v3 transport; an authenticated v3 watch-date response has
+not been checked live. Parsing accepts calendar-valid ISO dates and ISO timestamps
+with an explicit timezone, and ignores ambiguous or future values.
+
+History is device-local, profile-scoped, cached for one hour, and deduplicated
+with at most two requests in flight. Failed reads keep the known date and retry
+on the next relevance refresh after one minute. There is no new periodic poll.
+Successful empty arrays clear the date. The newest released unwatched episode
+comes from existing MyShows episode metadata; known release dates survive NP
+cards that omit it. Local successful marks invalidate older pending history
+responses. Undo invalidates the history cache. Profile/token/generation guards
+reject responses after logout or profile ABA. The Android metadata allowlist
+stays unchanged.
+
+VM tests cover merged ordering, alphabetical ties, malformed/future dates,
+list/channel parity, cache reuse and restart, NP missing dates, bounded requests,
+errors, empty histories, successful mark/undo, and profile/logout guards. They do
+not prove the authorized live v3 date format or ordering on a physical TV.

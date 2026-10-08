@@ -39,12 +39,26 @@ Automatic sync of watched series and movies with MyShows.me
 - Variant 1 — classic.  
 - Variant 2 — next episode bottom-left, progress bottom-right, episodes left top-right, with rounded corners like the card.  
 - **"Next episode" badge** — now also visible in the "Torrents" / "Online" windows, updates after the player is closed.  
-- **Series sorting** — 7 options: alphabetical, by progress, by unwatched count, by last episode date (↑/↓), by first unwatched date (↑/↓).  
+- **Series sorting** — 8 options: alphabetical, by relevance, by progress, by unwatched count, by last episode date (↑/↓), by first unwatched date (↑/↓).
 - **MyShows Calendar** — episode release dates from MyShows right in the "Calendar" section.  
 - **"Unwatched series" on Home** — a separate toggle for showing the section on the CUB/TMDB home screen.  
 - **NP-server storage mode** — the "Use NP server" setting: unwatched series data is stored on the server for fast loading across all devices.  
 - **Cross-device settings sync (NMSync)** — badges, sorting and other settings apply across all your devices automatically.  
 - **Manual sync with Lampac** — a "Sync" button for a one-time full reconciliation of watched content.  
+
+### Relevance sorting
+
+Choose **По актуальности** (By relevance) in series sorting. Shows rank by the
+newer of their last episode viewing date and latest released unwatched episode
+date, descending. Ties use alphabetical order. Progress remains the default.
+
+Only this mode requests MyShows viewing history. Dates are stored locally per
+profile and retained after completing a show; NP cards without dates use known
+local dates. Successful episode marks update the viewing date; undoing a mark
+reloads history. Request failures retain known dates and cards, while successful
+empty history clears the viewing date. Missing, ambiguous, invalid and future
+dates do not raise priority. The Lampa list and Android TV channel share the
+ordering; private viewing dates are not sent to Android.
 
 ### Android TV home channel (optional)
 
