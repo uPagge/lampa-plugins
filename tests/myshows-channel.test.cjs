@@ -492,3 +492,25 @@ test('DOM cards with older metadata follow the fresh relevance channel order', (
     app.run(50);
     assert.deepEqual(order,[1,2]);
 });
+
+test('cached relevance list returns once before history completes and remains on error', () => {
+    const app=launch({cards,storage:{myshows_sort_order_profile_a:'relevance'}});
+    const results=[];
+    app.context.MyShows.getUnwatchedShowsWithDetails(result=>results.push(Array.from(result.shows,c=>c.id)));
+    assert.deepEqual(results,[[1,2]],'cached cards return while history requests remain pending');
+    answerHistory(app,10,{error:{code:500}}); answerHistory(app,20,{error:{code:500}});
+    assert.deepEqual(results,[[1,2]],'history does not redeliver the list callback');
+});
+test('fresh relevance list returns once before viewing history completes', () => {
+    const app=launch({storage:{myshows_sort_order_profile_a:'relevance'}});
+    const results=[];
+    app.context.MyShows.getUnwatchedShowsWithDetails(result=>results.push(Array.from(result.shows,c=>c.id)));
+    app.answer('lists.EpisodesUnwatched',{result:[{show:{id:10,title:'Alpha',titleOriginal:'Alpha',year:2020},
+        episodes:[{id:101,seasonNumber:1,episodeNumber:1,shortName:'s01e01',airDate:'2020-01-01'}]}]});
+    app.answerUrl('search/tv',{results:[{id:1,name:'Alpha',original_name:'Alpha',first_air_date:'2020-01-01'}]});
+    app.answerUrl('/tv/1?',{id:1,name:'Alpha',original_name:'Alpha',first_air_date:'2020-01-01',seasons:[{season_number:1}]});
+    app.answer('shows.GetById',{result:{episodes:[{id:101,seasonNumber:1,episodeNumber:1,airDate:'2020-01-01'}]}});
+    assert.deepEqual(results,[[1]],'enriched fresh list returns while history remains pending');
+    answerHistory(app,10,history('2020-01-02'));
+    assert.deepEqual(results,[[1]],'history updates cards without another list callback');
+});

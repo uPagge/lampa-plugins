@@ -2301,9 +2301,11 @@
                 }
                 // callback (двигает UI) — только для текущего профиля
                 if (sameProfile && result && result.shows) {
+                    if (!channelContextCurrent(channelRequest)) return;
+                    sortShows(result.shows, getProfileSetting('myshows_sort_order', 'progress'));
+                    callback(result);
                     prepareRelevance(result.shows, channelRequest, function() {
-                        sortShows(result.shows, getProfileSetting('myshows_sort_order', 'progress'));
-                        callback(result);
+                        reorderCardsInMyShowsSection();
                     });
                 } else callback({ error: 'profile changed' });
             });
@@ -3134,9 +3136,12 @@
         var originalCallback = callback;
         callback = function(result) {
             if (!result || !result.shows) { originalCallback(result); return; }
+            if (requestedContext.generation !== _channelGeneration || requestedContext.profile !== getProfileId() ||
+                requestedContext.token !== getProfileSetting('myshows_token', '')) return;
+            sortShows(result.shows, getProfileSetting('myshows_sort_order', 'progress'));
+            originalCallback(result);
             prepareRelevance(result.shows, requestedContext, function() {
-                sortShows(result.shows, getProfileSetting('myshows_sort_order', 'progress'));
-                originalCallback(result);
+                reorderCardsInMyShowsSection();
             });
         };
 
