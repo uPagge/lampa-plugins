@@ -1957,9 +1957,11 @@
                     if (sameProfile) _populateProgressMap(result.shows);
                 }
                 if (sameProfile && result && result.shows) {
+                    if (!channelContextCurrent(channelRequest)) return;
+                    sortShows(result.shows, getProfileSetting("myshows_sort_order", "progress"));
+                    callback(result);
                     prepareRelevance(result.shows, channelRequest, function() {
-                        sortShows(result.shows, getProfileSetting("myshows_sort_order", "progress"));
-                        callback(result);
+                        reorderCardsInMyShowsSection();
                     });
                 } else callback({
                     error: "profile changed"
@@ -2587,9 +2589,11 @@
                 originalCallback(result);
                 return;
             }
+            if (requestedContext.generation !== _channelGeneration || requestedContext.profile !== getProfileId() || requestedContext.token !== getProfileSetting("myshows_token", "")) return;
+            sortShows(result.shows, getProfileSetting("myshows_sort_order", "progress"));
+            originalCallback(result);
             prepareRelevance(result.shows, requestedContext, function() {
-                sortShows(result.shows, getProfileSetting("myshows_sort_order", "progress"));
-                originalCallback(result);
+                reorderCardsInMyShowsSection();
             });
         };
         if (isNpConnected() || isNpConfigured()) {
