@@ -176,18 +176,22 @@
     }
     function relevanceRelease(show) {
         var ep = show.last_episode_to_myshows;
+        var hasDates = ep && (ep.air_date_utc !== undefined || ep.air_date !== undefined);
         var latest = ep ? relevanceDate(ep.air_date_utc || ep.air_date) : 0;
         (show.unwatchedEpisodes || []).forEach(function(episode) {
+            if (!episode) return;
+            if (episode.airDateUTC !== undefined || episode.airDate !== undefined) hasDates = true;
             latest = Math.max(latest, relevanceDate(episode.airDateUTC || episode.airDate));
         });
-        return latest;
+        return hasDates ? latest : null;
     }
     function rememberReleaseDates(shows) {
         var map = relevanceHistory();
         shows.forEach(function(show) {
             if (!show || !show.myshowsId || !show.last_episode_to_myshows && !show.unwatchedEpisodes) return;
             var entry = map[show.myshowsId] || {};
-            entry.release = relevanceRelease(show);
+            var release = relevanceRelease(show);
+            if (release !== null) entry.release = release;
             map[show.myshowsId] = entry;
         });
         setProfileSetting("myshows_relevance_history", map, false);
@@ -237,11 +241,15 @@
         }
     }
     function prepareRelevance(shows, context, callback) {
-        if (!channelContextCurrent(context)) return;
         if (getProfileSetting("myshows_sort_order", "progress") !== "relevance") {
             callback();
             return;
         }
+        if (!shows.length && context.generation === _channelGeneration && context.profile === getProfileId() && context.token === getProfileSetting("myshows_token", "")) {
+            callback();
+            return;
+        }
+        if (!channelContextCurrent(context)) return;
         rememberReleaseDates(shows);
         var map = relevanceHistory(), waiting = 0;
         var ids = {};
@@ -276,8 +284,8 @@
         var map = relevanceHistory();
         function time(show) {
             var entry = map[show.myshowsId] || {};
-            var ep = show.last_episode_to_myshows;
-            var release = ep || show.unwatchedEpisodes ? relevanceRelease(show) : entry.release || 0;
+            var release = entry.release !== undefined ? entry.release : relevanceRelease(show);
+            if (release === null) release = entry.release || 0;
             var watch = entry.watch > 0 && entry.watch <= Date.now() ? entry.watch : 0;
             return Math.max(watch, release <= Date.now() ? release : 0);
         }
@@ -916,8 +924,9 @@
     }
     function setProfileSetting(key, value, sync) {
         value = storableValue(value);
-        if (key === "myshows_token" && !value && getProfileSetting(key, "")) {
-            invalidateAndroidChannel(true);
+        if (key === "myshows_token" && value !== getProfileSetting(key, "") && getProfileSetting(key, "")) {
+            setProfileSetting("myshows_relevance_history", {}, false);
+            invalidateAndroidChannel(!value);
         }
         Lampa.Storage.set(getProfileKey(key), value);
         if (sync !== false && !_syncApplying && window.__NMSync) window.__NMSync.patch("myshows", getProfileKey(key), value);
@@ -926,13 +935,18 @@
     function _applyMyShowsSetting(profileKey, value) {
         if (profileKey.indexOf("_profile_") < 0) return;
         value = storableValue(value);
+        var base = profileKey.slice(0, profileKey.lastIndexOf("_profile_"));
+        var tokenChanged = base === "myshows_token" && value !== Lampa.Storage.get(profileKey, "");
+        if (tokenChanged) {
+            var targetProfile = profileKey.slice(profileKey.lastIndexOf("_profile_") + 9);
+            Lampa.Storage.set(profileKeyFor("myshows_relevance_history", targetProfile), {});
+        }
         _syncApplying = true;
         Lampa.Storage.set(profileKey, value);
-        var base = profileKey.slice(0, profileKey.lastIndexOf("_profile_"));
         if (getProfileKey(base) === profileKey) {
             Lampa.Storage.set(base, value, true);
             if (base === "myshows_badge_style") applyBadgeStyleAttr();
-            if (base === "myshows_token" && !value) invalidateAndroidChannel(true);
+            if (tokenChanged) invalidateAndroidChannel(!value);
         }
         _syncApplying = false;
     }
@@ -3537,29 +3551,39 @@
     }
     function applyEpisodeMarkLocally(card, episodeId, watched, channelRequest) {
         if (!channelContextCurrent(channelRequest)) return;
-        var historyMap = relevanceHistory();
-        var historyId = card.myshowsId;
-        if (!historyId && _channelShows) {
-            var knownShow = matchShowInArray(_channelShows, card);
-            if (knownShow) historyId = knownShow.myshowsId;
-        }
-        if (historyId) {
-            var historyEntry = historyMap[historyId] || {};
+        function recordHistory(id) {
+            if (!id) return;
+            var historyMap = relevanceHistory();
+            var historyEntry = historyMap[id] || {};
             historyEntry.version = (historyEntry.version || 0) + 1;
             if (watched) {
                 historyEntry.watch = Date.now();
                 historyEntry.checked = Date.now();
             } else historyEntry.checked = 0;
-            historyMap[historyId] = historyEntry;
+            historyMap[id] = historyEntry;
             setProfileSetting("myshows_relevance_history", historyMap, false);
         }
+        var historyId = card.myshowsId;
+        if (!historyId && _channelShows) {
+            var knownShow = matchShowInArray(_channelShows, card);
+            if (knownShow) historyId = knownShow.myshowsId;
+        }
+        recordHistory(historyId);
+        if (!watched && historyId) prepareRelevance([ {
+            myshowsId: historyId
+        } ], channelRequest, function() {
+            if (_channelShows) publishAndroidChannel(_channelShows, channelRequest);
+            reorderCardsInMyShowsSection();
+        });
         episodeId = parseInt(episodeId);
         scheduleEpisodeBadgeDecorate();
         loadCacheFromServer("unwatched_serials", "shows", function(result) {
+            if (!channelContextCurrent(channelRequest)) return;
             var arr = result && result.shows;
             if (!arr) return;
             var show = matchShowInArray(arr, card);
-            if (!show && !watched && channelSupported() && channelEnabled() && channelContextCurrent(channelRequest)) {
+            if (!historyId && show) recordHistory(show.myshowsId);
+            if (!show && !watched && (getProfileSetting("myshows_sort_order", "progress") === "relevance" || channelSupported() && channelEnabled()) && channelContextCurrent(channelRequest)) {
                 fetchFromMyShowsAPI(function() {}, channelRequest);
                 return;
             }
