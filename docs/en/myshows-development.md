@@ -85,16 +85,43 @@ The opt-in `relevance` mode uses `profile.Episodes({showId})` and the maximum
 valid `watchDate` in its episode summaries. The public MyShows Swagger schema
 (`https://api.myshows.me/shared/doc/swagger.json`, API version 2.0.2) documents
 `watchDate` as a string without a format. The plugin already uses this method
-through its existing v3 transport; an authenticated v3 watch-date response has
-not been checked live. Parsing accepts calendar-valid ISO dates and ISO timestamps
-with an explicit timezone, and ignores ambiguous or future values.
+through its existing v3 transport. An owner-authorized narrow live check confirmed
+compact numeric timezone offsets (`+0300`) in v3 `watchDate`. Parsing accepts
+calendar-valid ISO dates and ISO timestamps with an explicit timezone, including
+both `+0300` and `+03:00`; clock and offset fields are checked before parsing.
+Ambiguous, damaged and future values remain rejected. Persisted history entries
+carry local `dateParser: 2`: older entries are re-read once even if their former
+one-hour cache is fresh, preserving known watch/release dates and local versions
+until a successful response. Failed reads keep dates and the existing retry delay.
+This does not change authentication or synchronize personal history.
 
 History is device-local, profile-scoped, cached for one hour, and deduplicated
 with at most two requests in flight. Failed reads keep the known date and retry
 on the next relevance refresh after one minute. There is no new periodic poll.
 Cached and fresh list callbacks return exactly once with the known-date order
-without waiting for history. Background history completion reorders existing
-DOM cards and republishes the channel under the original profile generation.
+without waiting for history. Cached history and release metadata are applied
+before the first page is sliced. Background completion sorts the complete list;
+if its order changed, a short owned delay rechecks the owning current activity
+before calling public Activity.replace. ActivitySlide.refresh is deliberately
+not used here: its unguarded deferred replacement can replace a screen opened
+during the delay. This rebuilds the first 20 membership, lazy Line.items
+and navigation together instead of only moving existing DOM cards. Native
+replacement retains its own activity parameters through native extractObject. The ready cache prevents a refresh loop;
+unchanged ordering does not refresh. Request source/URL/page/query, activity
+handle and profile/token/generation must still match. MyShows landing and More
+pass their own request handles; relevance More uses the full newly sorted list,
+including NP, rather than the old shuffled snapshot. The channel keeps its own
+existing publication lifecycle and comparator.
+
+The neutral 21-show regression puts the recent show outside the initial page,
+then exercises unchanged native Line Items init/append/create/scroll functions
+from the hashed snapshot in `lampa-line-items-contract.js` alongside native
+public replace/extractObject in `lampa-activity-replace-contract.js`. Pending-delay
+regressions change navigation, profile, account, source or native handle after
+history completion and assert zero actual native replacements. It verifies lazy 7-card creation, new first20
+membership, subsequent lazy navigation, no Android bridge, warm history,
+unchanged/error history, NP More and stale navigation/profile/account/source.
+DOM rendering/keyboard focus on a real client still require browser acceptance.
 Successful empty arrays clear the date. The newest released unwatched episode
 comes from existing MyShows episode metadata; known release dates survive NP
 cards that omit it. Local successful marks invalidate older pending history

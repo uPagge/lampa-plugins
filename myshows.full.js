@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.0.12';
+    var VERSION = '1.0.17';
 
     var DEFAULT_ADD_THRESHOLD = '0';
     var DEFAULT_MIN_PROGRESS = 90;
@@ -205,12 +205,17 @@
 
     function relevanceDate(value) {
         if (typeof value !== 'string') return 0;
-        var match = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))?$/.exec(value);
+        var match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):?(\d{2})))?$/.exec(value);
         if (!match) return 0;
         var day = new Date(Date.UTC(+match[1], +match[2] - 1, +match[3]));
         if (day.getUTCFullYear() !== +match[1] || day.getUTCMonth() !== +match[2] - 1 ||
             day.getUTCDate() !== +match[3]) return 0;
-        var time = Date.parse(value);
+        if (match[4] !== undefined && (+match[4] > 23 || +match[5] > 59 || +match[6] > 59 ||
+            +match[8] > 23 || +match[9] > 59)) return 0;
+        // MyShows v3 returns compact offsets, e.g. +0300. Normalize for engines
+        // that support only the colon form; never infer an absent timezone.
+        var normalized = value.replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
+        var time = Date.parse(normalized);
         return isFinite(time) && time > 0 && time <= Date.now() ? time : 0;
     }
 
@@ -271,6 +276,7 @@
                                 Log.warn('MyShows viewing history unavailable');
                                 entry.checked = Date.now() - 3540000; // Retry in one minute, retain date.
                             }
+                            entry.dateParser = 2;
                             map[request.id] = entry;
                             setProfileSetting('myshows_relevance_history', map, false);
                         }
@@ -296,7 +302,9 @@
         }
         Object.keys(ids).forEach(function(id) {
             var entry = map[id] || {};
-            if (entry.checked && Date.now() - entry.checked < 3600000) return;
+            // Revalidate pre-compact-offset caches once, preserving known dates
+            // until a successful response. Errors retain the normal retry window.
+            if (entry.dateParser === 2 && entry.checked && Date.now() - entry.checked < 3600000) return;
             waiting++;
             var key = context.generation + ':' + context.profile + ':' + id + ':' + (entry.version || 0);
             if (_relevancePending[key]) { _relevancePending[key].callbacks.push(complete); return; }
@@ -3130,19 +3138,51 @@
         }
     }
 
-    function getUnwatchedShowsWithDetails(callback, show) {
+    function getUnwatchedShowsWithDetails(callback, show, sourceRequest) {
         Log.info('getUnwatchedShowsWithDetails called');
         var requestedContext = channelContext();
         var originalCallback = callback;
+        // Native components are created before Activity.push activates them.
+        // Bind to the request handle, not the previous screen on the stack.
+        var owner = sourceRequest && sourceRequest.activity ? sourceRequest : Lampa.Activity.active();
+        var handle = owner && owner.activity;
+        var request = sourceRequest || owner || {};
+        var source = request.source, url = request.url, page = request.page, query = request.query;
         callback = function(result) {
             if (!result || !result.shows) { originalCallback(result); return; }
             if (requestedContext.generation !== _channelGeneration || requestedContext.profile !== getProfileId() ||
                 requestedContext.token !== getProfileSetting('myshows_token', '')) return;
-            sortShows(result.shows, getProfileSetting('myshows_sort_order', 'progress'));
-            originalCallback(result);
+            var delivered = false, order;
+            function signature() {
+                return result.shows.map(function(item) { return item.myshowsId || item.id || getCardName(item); }).join('|');
+            }
+            // Cached history and fresh release metadata must participate BEFORE
+            // consumers slice the first page. Async history keeps the fast callback.
             prepareRelevance(result.shows, requestedContext, function() {
-                reorderCardsInMyShowsSection();
+                if (getProfileSetting('myshows_sort_order', 'progress') !== 'relevance') return;
+                sortShows(result.shows, 'relevance');
+                if (!delivered || signature() === order) return;
+                function current() {
+                    var active = Lampa.Activity.active();
+                    return channelContextCurrent(requestedContext) &&
+                        getProfileSetting('myshows_sort_order', 'progress') === 'relevance' &&
+                        handle && active && active.activity === handle && owner.activity === handle &&
+                        request.source === source && request.url === url && request.page === page && request.query === query &&
+                        /^(main|category|myshows_all|myshows_unwatched)$/.test(active.component || '');
+                }
+                if (!current()) return;
+                // ActivitySlide.refresh queues an unguarded replacement. Own only
+                // this delay and recheck at execution; never touch native timers.
+                setTimeout(function() {
+                    if (!current() || typeof Lampa.Activity.replace !== 'function') return;
+                    if (handle.component && typeof handle.component.beforeRefresh === 'function') handle.component.beforeRefresh();
+                    if (current()) Lampa.Activity.replace();
+                }, 400);
             });
+            sortShows(result.shows, getProfileSetting('myshows_sort_order', 'progress'));
+            order = signature();
+            originalCallback(result);
+            delivered = true;
         };
 
         // isNpConfigured(): читаем с NP по настройке, не дожидаясь пинга — иначе на
@@ -5959,7 +5999,7 @@
         }, 150);
     }
 
-    function addMyShowsData(data, oncomplite) {
+    function addMyShowsData(data, oncomplite, sourceRequest) {
         if (getProfileSetting('myshows_view_in_main', true)) {
             var token = getProfileSetting('myshows_token', '');
 
@@ -5982,7 +6022,7 @@
                         data.unshift(myshowsCategory);
                     }
                     oncomplite(data);
-                });
+                }, null, sourceRequest);
                 return true;
             }
         }
@@ -6018,7 +6058,7 @@
 
         Lampa.Api.sources.tmdb.main = function(params, oncomplite, onerror) {
             return originalTMDBMain.call(this, params, function(data) {
-                addMyShowsData(data, oncomplite);
+                addMyShowsData(data, oncomplite, params);
             }, onerror);
         };
     }
@@ -6032,7 +6072,7 @@
 
         Lampa.Api.sources.cub.main = function(params, oncomplite, onerror) {
             var originalLoadPart = originalCUBMain.call(this, params, function(data) {
-                addMyShowsData(data, oncomplite);
+                addMyShowsData(data, oncomplite, params);
             }, onerror);
 
             return originalLoadPart;
@@ -7541,7 +7581,7 @@
             var currentPage = object.page || 1;
             var cacheKey = 'unwatched_raw';
 
-            if (useNpServer()) {
+            if (useNpServer() && getProfileSetting('myshows_sort_order', 'progress') !== 'relevance') {
                 // Сервер отдаёт все карточки сразу — пагинируем на клиенте
                 loadCacheFromServer('unwatched_serials', 'shows', function(response) {
                     if (response && response.results) {
@@ -7572,7 +7612,7 @@
                     if (onerror) onerror();
                     return;
                 }
-                if (!cachedShuffledItems[cacheKey]) {
+                if (!cachedShuffledItems[cacheKey] || getProfileSetting('myshows_sort_order', 'progress') === 'relevance') {
                     cachedShuffledItems[cacheKey] = result.shows.slice();
                 }
                 var cached = cachedShuffledItems[cacheKey];
@@ -7584,7 +7624,7 @@
                     total_pages: totalPages,
                     total_results: cached.length
                 });
-            });
+            }, null, object);
         }
 
         Log.info('=== ApiMyShows Factory END ===');
@@ -7639,7 +7679,7 @@
                     getUnwatchedShowsWithDetails(function(result) {
                         allData.unwatched = result;
                         checkComplete('unwatched');
-                    });
+                    }, null, object);
 
                     Api.myshowsWatchlist({ page: 1 }, function(result) {
                         allData.watchlist = result;
@@ -8061,15 +8101,6 @@
                 // Запоминаем инстанс линии — через него вставляем новые карточки штатно
                 // (createAndAppend → попадают в this.items, навигация их видит).
                 _myShowsLine = event.line || null;
-
-                // Принудительно создаем все карточки после создания Line
-                if (event.data && event.data.results && event.line) {
-                    event.data.results.forEach(function(show) {
-                        if (!show.ready && event.line.append) {
-                            event.line.append(show);
-                        }
-                    });
-                }
 
                 // На медленных платформах (WebOS, старый Android) visible стреляет
                 // раньше, чем Lampa записывает card_data на DOM-элемент.
