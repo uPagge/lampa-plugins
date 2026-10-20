@@ -36,16 +36,13 @@ are not replaced or exported for testing. Fixtures contain neutral test data.
 
 ## Watched discovery contract
 
-`myshows_hide_watched` is device-local and profile-local, default off; it is not
-an NMSync setting. Both opt-in triggers (`myshows_hide_watched` and
-`myshows_android_tv`) initialize absent profile keys explicitly to `false` via
-the existing string-safe profile setter. `loadProfileSettings` mirrors both into
-the unscoped native UI keys with `storableValue`, including on profile changes.
-Those mirrors are settings UI state only and are not NMSync keys. This avoids
-native Storage converting an unset false fallback to an empty string and Params
-displaying `undefined`; normal defaults display Нет and enabled values display Да.
-Native toggle callbacks supply the strings `true`/`false`, which the existing
-handlers preserve locally.
+`myshows_watched_mode` is a native select with `show`, `mark`, `hide` values,
+device/profile-local and excluded from NMSync. If absent, legacy
+`myshows_hide_watched` true/string true migrates to `hide`; all other legacy
+values migrate to `show`. Explicit new values take priority. The unscoped mode
+key is a native UI mirror refreshed on profile changes. The independent
+`myshows_android_tv` trigger retains its explicit false default, string-safe
+mirror and local callback handling, avoiding native `undefined` value labels.
 
 `tests/fixtures/lampa-settings-contract.js` contains ten unchanged function
 extracts from the supplied real client: Storage get/set, Params registration,
@@ -54,6 +51,35 @@ snapshot SHA-256. The suite executes those functions with the complete plugin,
 asserting the rendered Нет/Да text for fresh defaults, actual native toggles,
 cold restart and profile changes. Environment dependencies/DOM translation are
 boundary doubles; the Storage fallback and Params label logic are not mirrored.
+
+Mark reuses the exact positive watched classifier and copies `_myshows_watched`
+epoch/profile/generation metadata only onto confirmed cards. It preserves cards,
+rows, totals, source pages and request cursor and never drains hidden pages.
+The existing document `visible` capture hook cleans reused DOM before applying
+`.myshows-watched-card` and `.myshows-watched-check` (✓) inside `.card__view`.
+Only `.card__img` is dimmed; `.focus`/`:focus` restores its filter. Invalidating
+mode/profile/account/status proofs removes current decorations. Metadata has no
+token, and stale epoch/profile/generation checks cannot reapply it.
+
+The verified built-in `recomend_watch` row has no URL/source and its More uses
+`Recomends.page` outside Api.list. During a scoped synchronous ContentRows.call,
+a temporary Array.prototype.forEach observer finds the named native registry
+row. It restores the exact prior prototype BEFORE iterating native/custom rows,
+wraps only that actual row factory, and permanently stops discovery once found.
+The original factory retains its own visibility, shuffle, insertion index,
+callback, and Router More metadata; copied payload gets private provenance.
+No initializer or timer is duplicated. Disabled/absent registries can be found
+on a later enabled call; finally restores the prototype on every throw/no-match.
+The exported native Recomends.page uses the same guards/classifier/pagination
+wrapper. This is tied to the inspected 3.3.4 contract, not arbitrary future rows.
+The initially considered copied adapter was rejected because it reordered
+later custom rows sharing index1; actual native registration order is preserved.
+
+`tests/fixtures/lampa-recommendations-contract.js` contains unchanged native
+ContentRows and Recomends functions from the same hashed source snapshot. Tests
+cover the actual registered URL-less row/More path, colliding indices, unrelated
+custom rows/arrays, disabled-to-enabled discovery, prototype restoration and
+single initialization alongside the complete plugin.
 
 `Api.main/category/list` wrappers accept only known CUB/TMDB
 discovery requests/rows. The original request's query (including an empty query)
