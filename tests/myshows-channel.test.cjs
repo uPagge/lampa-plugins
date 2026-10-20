@@ -70,6 +70,10 @@ function launch(options = {}) {
     if (options.sync) context.__NMSync = {patch(...args){(context.syncPatches ||= []).push(args);},
         register(name, keys, apply) {context.applySync = apply;context.syncKeys = keys;}};
     context.window = context;
+    if (options.nativeActivity) {
+        Lampa.Activity.own=component=>active?.activity?.component===component;
+        vm.runInNewContext(fs.readFileSync(path.join(__dirname,'fixtures/lampa-activity-lifecycle-contract.js'),'utf8'),context);
+    }
     if (options.nativeSettings) {
         // Real Storage/Params/SettingsApi functions are extracted unchanged from
         // the supplied framework snapshot, not reimplemented in a test helper.
@@ -324,7 +328,7 @@ const seenCard = {id:1,title:'Seen',original_title:'Seen',release_date:'2020-01-
 const unseenCard = {id:2,title:'New',release_date:'2021-01-01'};
 function discovery(options={}) {
     const pages=options.pages || [{page:1,total_pages:1,results:[seenCard,unseenCard]}], loads=[];
-    const app=launch({beforeRecommendations:options.beforeRecommendations,nativeSettings:options.nativeSettings,recommendations:options.recommendations,sync:options.sync,activity:options.activity,storage:{myshows_hide_watched_profile_a:'true',...options.storage},
+    const app=launch({nativeActivity:options.nativeActivity,beforeRecommendations:options.beforeRecommendations,nativeSettings:options.nativeSettings,recommendations:options.recommendations,sync:options.sync,activity:options.activity,storage:{myshows_hide_watched_profile_a:'true',...options.storage},
         api:{list(request,done,error) {loads.push({...request});
             const page=pages[(request.page || 1)-1];
             if(page instanceof Error) error(page); else done(page);
@@ -387,6 +391,48 @@ function watchedDomCard(data) {
     const view={appendChild(child){children.push(child);child.remove=()=>children.splice(children.indexOf(child),1);}};
     return node;
 }
+for(const change of ['unchanged library','new unwatched episode','different profile','different account'])test('retained mark catalogue refreshes before native Back start with '+change,()=>{
+    let replaces=0,currentStarts=0;
+    const app=discovery({nativeActivity:true,sync:true,pages:[{results:[tvCard,unseenCard]}],storage:{myshows_watched_mode_profile_a:'mark',
+        myshows_watched_mode_profile_b:'mark',myshows_token_profile_b:'other-token',myshows_calendar_profile_b:'false'},
+        activity:{replace(){replaces++;load(a);}}});
+    const contract=app.context.__nativeActivityLifecycleContract;
+    const native=()=>({...contract,component:{start(){currentStarts++;}},loader(){}});
+    const a={...topRequest,url:'top/hundred/tv',component:'category_full',activity:native()};
+    const b={...topRequest,component:'category_full',activity:native()};
+    let node;
+    function load(target){app.context.Lampa.Api.list(target,value=>{
+        if(target===a){node=watchedDomCard(value.results[0]);app.emitDom('visible',node);}
+    },assert.fail);}
+    app.setActive(a);load(a);app.index([],[showSummary]);
+    television(app,[{id:101,airDate:'2020-01-01'}],[{id:101,watchDate:'2020-01-02'}]);
+    app.run(50);app.emitDom('visible',node);
+    app.requests.length=0; // Isolate discovery from unrelated startup list requests.
+    assert.ok(node.querySelector('.myshows-watched-check'));
+    app.context.document.querySelectorAll=selector=>selector==='.myshows-watched-card'?[node]:[];
+    // Native creates B (including its source request) BEFORE pushing B as active.
+    load(b);app.setActive(b);app.index([],[showSummary]);
+    television(app,[{id:101,airDate:'2020-01-01'}],[{id:101,watchDate:'2020-01-02'}]);
+    assert.equal(node.querySelector('.myshows-watched-check'),null,'old proof removed');
+    assert.equal(b.activity.waite_refresh,undefined,'newly loading activity never refreshes itself');
+    assert.equal(replaces,0,'create-before-push does not schedule replacement of B');
+    if(change==='different profile')app.changeProfile('b');
+    if(change==='different account')app.context.applySync('myshows_token_profile_a','replacement-token');
+    app.requests.length=0;
+    app.setActive(a);a.activity.start();
+    app.emitDom('visible',node);
+    assert.equal(node.querySelector('.myshows-watched-check'),null,'old context cannot restore a mark on Back');
+    assert.equal(currentStarts,0,'stale retained component must not start');
+    app.run(400);assert.equal(replaces,1);
+    const newContext=change==='different profile'||change==='different account';
+    app.index([],newContext?[]:[showSummary]);
+    if(!newContext)television(app,change==='new unwatched episode'?[{id:101,airDate:'2020-01-01'},{id:102,airDate:'2020-01-03'}]:[{id:101,airDate:'2020-01-01'}],
+        [{id:101,watchDate:'2020-01-02'}]);
+    assert.equal(!!node.querySelector('.myshows-watched-check'),change==='unchanged library','return uses fresh series proof');
+    assert.equal(a.page,1,'mark keeps native cursor');
+    assert.equal(replaces,1,'refresh does not loop');
+    assert.equal(app.requests.filter(r=>/^manage\./.test(r.body?.method||'')).length,0);
+});
 test('native visible hook marks positive card once and cleans reused DOM and mode changes',()=>{
     const app=discovery({storage:{myshows_watched_mode_profile_a:'mark'}}),active={...topRequest,component:'category_full'};app.setActive(active);
     let output;app.context.Lampa.Api.list(active,v=>output=v,assert.fail);app.index();app.run(50);app.run(2000);

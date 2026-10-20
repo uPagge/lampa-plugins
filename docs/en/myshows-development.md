@@ -61,6 +61,16 @@ Only `.card__img` is dimmed; `.focus`/`:focus` restores its filter. Invalidating
 mode/profile/account/status proofs removes current decorations. Metadata has no
 token, and stale epoch/profile/generation checks cannot reapply it.
 
+Opening another eligible catalogue resets the ready index and retires marks on
+retained screens. Their native ActivitySlide `refresh()` is queued after the
+synchronous create-before-push phase, excluding the currently loading handle.
+This sets the native deferred refresh flag, so Back refreshes/reclassifies the
+retained screen instead of starting its old component with rejected metadata.
+The one-tick boundary avoids scheduling a replacement while the previous screen
+is still reported active. Unchanged-library, newly released unwatched episode,
+profile/account switch and native cursor cases exercise unchanged ActivitySlide
+start/refresh/runRefresh functions in `lampa-activity-lifecycle-contract.js`.
+
 The verified built-in `recomend_watch` row has no URL/source and its More uses
 `Recomends.page` outside Api.list. During a scoped synchronous ContentRows.call,
 a temporary Array.prototype.forEach observer finds the named native registry
