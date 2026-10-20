@@ -67,7 +67,7 @@ function launch(options = {}) {
         data.set('myshows_use_np_profile_a','true');
         data.set('base_url_numparser','https://np.invalid');
         data.set('numparser_api_key','test-np-token');}
-    if (options.sync) context.__NMSync = {patch(){}, register(name, keys, apply) {context.applySync = apply;}};
+    if (options.sync) context.__NMSync = {patch(...args){(context.syncPatches ||= []).push(args);}, register(name, keys, apply) {context.applySync = apply;context.syncKeys=keys;}};
     context.window = context;
     if (options.nativeActivity) {
         Lampa.Activity.own=component=>active?.activity?.component===component;
@@ -681,4 +681,20 @@ for(const change of ['navigation','profile','account','source','handle'])test('p
     assert.equal(app.rebuilds(),0,'no native replacement after ownership changed');
     if(change==='navigation')assert.equal(app.context.Lampa.Activity.active(),next,'new screen handle is untouched');
     if(change!=='handle')assert.equal(app.target.activity,oldHandle);
+});
+
+test('channel opt-in persists an explicit string false default and native profile mirror locally',()=>{
+    const app=launch({sync:true});app.data.delete('myshows_android_tv_profile_a');app.run(2000);
+    assert.equal(app.data.get('myshows_android_tv_profile_a'),'false');
+    assert.equal(app.data.get('myshows_android_tv'),'false');
+    assert.equal(app.setting('myshows_android_tv').param.default,'false');
+    assert.equal(app.context.syncKeys.includes('myshows_android_tv'),false);
+    assert.equal((app.context.syncPatches||[]).some(call=>call[1].includes('myshows_android_tv')),false);
+});
+for(const value of [true,false,'true','false'])test('channel mirror preserves explicit profile preference '+typeof value+' '+value,()=>{
+    const app=launch({sync:true,storage:{myshows_android_tv_profile_a:value,myshows_android_tv_profile_b:'false'}});
+    app.run(2000);assert.equal(app.data.get('myshows_android_tv_profile_a'),value);
+    assert.equal(app.data.get('myshows_android_tv'),String(value));
+    app.changeProfile('b');assert.equal(app.data.get('myshows_android_tv'),'false');
+    app.changeProfile('a');assert.equal(app.data.get('myshows_android_tv'),String(value));
 });
