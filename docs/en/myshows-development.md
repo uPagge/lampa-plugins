@@ -92,8 +92,9 @@ custom rows/arrays, disabled-to-enabled discovery, prototype restoration and
 single initialization alongside the complete plugin.
 
 `Api.main/category/list` wrappers accept only known CUB/TMDB
-discovery requests/rows. The original request's query (including an empty query)
-and source/path determine scope. Personal, search, calendar and custom rows are
+discovery requests/rows. Nonempty queries (including whitespace) remain excluded;
+the exact empty query added by the native category_full route is not search
+provenance. Source/path still determine scope. Personal, search, calendar and custom rows are
 preserved. Verified built-in CUB `collections/<numeric-id>` rows and their More
 lists are included. Shared source responses, row objects and result arrays are
 never
@@ -138,7 +139,12 @@ the partial batch with a retry notice; errors before any visible result retain
 the original error callback. Duplicate source callbacks are ignored.
 
 Known pageable main/category rows use the captured original Api.list producer
-with their verified URL/source/page, preserving their original More metadata.
+with their verified URL/source/page, preserving their original More metadata
+and original row.page. Native Router uses row.page to start a NEW full catalogue,
+so its page must not become the row refill's internal consumed-page cursor.
+The new grid starts on original page 1 and owns its own refill/next-page cursor.
+Unchanged native Router.call/get, category_full route and Arrays helpers in
+`lampa-router-contract.js` exercise this exact route-to-Api.list boundary.
 Unsupported/unpageable rows are filtered without an invented loader. The native
 URL-less recommendation row preserves its original shuffled sample and appends
 canonical Recomends.page results starting at page 1, using movie for main and
