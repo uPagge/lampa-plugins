@@ -128,10 +128,28 @@ No refresh is triggered by index completion, avoiding a refresh/load cycle.
 
 Main/category initial callbacks and returned continuations are wrapped. Empty
 filtered batches continue asynchronously; explicit repeated source cursors stop
-draining, with a 100-batch guard for sources omitting cursors. List pages drain
-asynchronously until visible cards or real exhaustion, preserving source totals.
-Repeated source page numbers terminate; later source errors use the original
-error callback. Duplicate source callbacks are ignored. The plugin initialization
+draining, with a 100-batch guard for sources omitting cursors. In hide mode,
+paginated batches refill asynchronously to at least their original result count
+or source exhaustion. Every visible card from consumed pages is emitted, including
+overshoot; no extra buffer or truncated tail is created. The owned list/More
+cursor advances to the last consumed source page. Source totals stay unchanged.
+Repeated source page numbers terminate. An error after partial success returns
+the partial batch with a retry notice; errors before any visible result retain
+the original error callback. Duplicate source callbacks are ignored.
+
+Known pageable main/category rows use the captured original Api.list producer
+with their verified URL/source/page, preserving their original More metadata.
+Unsupported/unpageable rows are filtered without an invented loader. The native
+URL-less recommendation row preserves its original shuffled sample and appends
+canonical Recomends.page results starting at page 1, using movie for main and
+the native category media otherwise. Stable type/id identities from the whole
+sample, including hidden cards, prevent sampled/canonical overlap. Unknown or
+invalid IDs are preserved without title-based deduplication. Because the sample
+is random, its row.page remains original and is not advertised as a consumed
+canonical cursor; More still starts its own canonical pagination normally.
+Show/mark never refill or change their source cursors.
+
+The plugin initialization
 guard also prevents two queued copies of this build from registering listeners
 and settings twice. It does not remove a legacy plugin already running before
 the guarded build; registry migration remains a separate delivery step.

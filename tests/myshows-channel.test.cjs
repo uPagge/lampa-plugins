@@ -590,6 +590,85 @@ test('all-hidden source pages drain asynchronously and preserve real source curs
     assert.equal(output.page,3);assert.deepEqual(app.loads.map(r=>r.page),[1,2,3]);
     assert.deepEqual(Array.from(output.results,c=>c.id),[2]);assert.equal(request.page,3);
 });
+function refillBatch(page,hidden=5,count=20) {
+    return {page,total_pages:3,total_results:60,results:Array.from({length:count},(_,i)=>({...i<hidden?seenCard:unseenCard,id:page*100+i}))};
+}
+test('hide refills a partial 15/20 page and keeps overshoot order with the consumed native cursor',()=>{
+    const pages=[refillBatch(1),refillBatch(2),refillBatch(3,0)],app=discovery({pages});
+    const request={...topRequest};let output;app.context.Lampa.Api.list(request,v=>output=v,assert.fail);app.index();
+    const first=Array.from(output.results,c=>c.id);
+    assert.deepEqual(first,[...pages[0].results.slice(5),...pages[1].results.slice(5)].map(c=>c.id));
+    assert.equal(first.length,30,'all overshoot is emitted');assert.equal(request.page,2);assert.equal(output.page,2);
+    assert.equal(pages[0].results.length,20,'shared source page stays untouched');
+    request.page++;app.context.Lampa.Api.list(request,v=>output=v,assert.fail);app.flush();
+    assert.deepEqual(Array.from(output.results,c=>c.id),pages[2].results.map(c=>c.id));
+    assert.deepEqual(app.loads.map(r=>r.page),[1,2,3]);assert.equal(new Set([...first,...output.results.map(c=>c.id)]).size,50);
+});
+test('hide returns the short remainder after exhausting consecutive partial pages',()=>{
+    const pages=[{...refillBatch(1,18),total_pages:2},{...refillBatch(2,18),total_pages:2}],app=discovery({pages});
+    const request={...topRequest};let output;app.context.Lampa.Api.list(request,v=>output=v,assert.fail);app.index();
+    assert.deepEqual(Array.from(output.results,c=>c.id),[118,119,218,219]);assert.equal(request.page,2);
+    assert.deepEqual(app.loads.map(r=>r.page),[1,2]);
+});
+test('hide returns partial cards and a retry notice when a later refill page errors',()=>{
+    const app=discovery({pages:[refillBatch(1),new Error('page unavailable')]});let output,errors=0;
+    const request={...topRequest};app.context.Lampa.Api.list(request,v=>output=v,()=>errors++);app.index();
+    assert.equal(output.results.length,15);assert.equal(request.page,1);assert.equal(errors,0);
+    assert.equal(app.loads.length,2);assert.match(app.notices.join(' '),/повтор/i);
+});
+test('refill deduplicates only known type/id and keeps unknown identities and movie/tv collisions',()=>{
+    const unknown={title:'Unknown',release_date:'2021-01-01'},tv={id:2,name:'Unknown',first_air_date:'2021-01-01'};
+    const app=discovery({pages:[{page:1,total_pages:2,results:[seenCard,unseenCard,{...unseenCard,id:3}]},
+        {page:2,total_pages:2,results:[unseenCard,tv,unknown,{...unknown},{...unknown,id:{}},{...unknown,id:{}}]}]});let output;
+    app.context.Lampa.Api.list({...topRequest},v=>output=v,assert.fail);app.index();
+    assert.equal(output.results.length,7);assert.equal(output.results[0],unseenCard);assert.equal(output.results[2],tv);
+    assert.equal(output.results.filter(c=>c.id===undefined).length,2);assert.equal(output.results.filter(c=>typeof c.id==='object').length,2);
+});
+for(const mode of ['show','mark'])test(mode+' never refills a partial watched source batch',()=>{
+    const app=discovery({pages:[refillBatch(1),refillBatch(2)],storage:{myshows_watched_mode_profile_a:mode}});let output;
+    const request={...topRequest};app.context.Lampa.Api.list(request,v=>output=v,assert.fail);if(mode==='mark')app.index();
+    assert.equal(output.results.length,20);assert.equal(app.loads.length,1);assert.equal(request.page,1);
+});
+for(const change of ['navigation','profile','token'])test('pending partial refill rejects stale '+change+' context',()=>{
+    let next,delivered=0;const app=discovery({api:{list(request,done){app.loads.push({...request});
+        if(request.page===1)done(refillBatch(1));else next=done;}}});
+    const request={...topRequest};app.context.Lampa.Api.list(request,()=>delivered++,assert.fail);app.index();
+    assert.equal(typeof next,'function','partial page starts refill');
+    if(change==='navigation')app.setActive({component:'search'});
+    if(change==='profile')app.changeProfile('b');
+    if(change==='token')app.data.set('myshows_token_profile_a','replacement');
+    next(refillBatch(2));app.flush();assert.equal(delivered,0);assert.equal(request.page,1);assert.equal(app.notices.length,0);
+});
+for(const method of ['main','category'])test('hide refills a known '+method+' row through the original list producer without changing More metadata',()=>{
+    const row={...refillBatch(1),source:'tmdb',url:'movie/popular',title:'Original row',params:{emit:{onlyMore(){}}}};
+    const pages=[row,refillBatch(2)],app=discovery({pages,api:{[method](request,done){done([row]);return 'native-handle';}}});
+    let output;assert.equal(app.context.Lampa.Api[method]({source:'tmdb',...method==='category'?{url:'movie'}:{}},v=>output=v,assert.fail),'native-handle');app.index();
+    assert.equal(output[0].results.length,30);assert.equal(output[0].params,row.params);assert.equal(output[0].title,row.title);
+    assert.equal(output[0].page,2);assert.deepEqual(app.loads.map(r=>[r.source,r.url,r.page]),[['tmdb','movie/popular',2]]);
+});
+test('unpageable rows stay filtered without an invented loader and a row refill error returns partial with notice',()=>{
+    for(const pageable of [false,true]) {
+        const row={...refillBatch(1),source:'tmdb',url:'movie/popular'};if(!pageable)delete row.page;
+        const app=discovery({api:{main(request,done){done([row]);},list(request,done,error){app.loads.push({...request});error(new Error('unavailable'));}}});let output;
+        app.context.Lampa.Api.main({source:'tmdb'},v=>output=v,assert.fail);app.index();
+        assert.equal(output[0].results.length,15);assert.equal(app.loads.length,pageable?1:0);
+        assert.equal(app.notices.length,pageable?1:0);
+    }
+});
+test('native URL-less shuffled recommendation refill scans canonical page1 and removes sampled overlap without dropping raw page1',()=>{
+    const canonical=Array.from({length:60},(_,i)=>({...i>=10&&i<15?seenCard:unseenCard,id:1000+i}));
+    const app=discovery({recommendations:true,storage:{recomends_list:canonical.slice().reverse()},api:{main(request,done){
+        const parts=[];app.context.Lampa.ContentRows.call('main',request,parts);done(parts.map(call=>{let row;call(v=>row=v);return row;}));}}});
+    app.context.Lampa.Arrays.shuffle=array=>array.slice(10,30);let output;
+    app.context.Lampa.Api.main({source:'tmdb'},v=>output=v,assert.fail);app.index();
+    assert.deepEqual(Array.from(output[0].results,c=>c.id),[...Array.from({length:15},(_,i)=>1015+i),...Array.from({length:10},(_,i)=>1000+i)]);
+    assert.equal(output[0].url,undefined);assert.equal(output[0].page,1,'random sample is not a canonical consumed cursor');
+    output[0].params.emit.onlyMore();assert.equal(app.context.routerCalls[0][0],'recomend');assert.equal(app.context.routerCalls[0][1].media,'movie');
+    const request={component:'recomend',media:'movie',page:1,activity:{}};app.setActive(request);
+    app.context.Lampa.Recomends.page(request,v=>output=v,assert.fail);app.index();
+    assert.equal(output.results.length,35);assert.equal(request.page,2,'canonical More owns last consumed cursor');
+    assert.deepEqual(Array.from(output.results,c=>c.id),[...Array.from({length:10},(_,i)=>1000+i),...Array.from({length:25},(_,i)=>1015+i)]);
+});
 test('repeated source page terminates and subsequent source errors use error callback',()=>{
     const repeat=discovery({pages:[{page:1,total_pages:4,results:[seenCard]},{page:1,total_pages:4,results:[seenCard]}]});
     let output;repeat.context.Lampa.Api.list(topRequest,v=>output=v,assert.fail);repeat.index();

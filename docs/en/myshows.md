@@ -53,7 +53,10 @@ offers **Показывать обычно** (Show normally), **Приглуша
 (Dim and mark), and **Скрывать** (Hide). Mark keeps the original cards, count,
 order and source pages, adding ✓ and dimming only confirmed watched posters.
 Remote focus restores normal poster brightness without dimming text or the
-focus ring. Hide retains the existing filtered-page draining behavior.
+focus ring. Hide fills a shortened batch from following source pages until it
+reaches the original batch size or the source ends. All visible cards from
+consumed pages are returned: 15 plus another 15 yields 30, without discarding
+the extra cards. A refill error keeps collected cards and asks you to retry.
 
 Ordinary CUB/TMDB home rows, catalogues, collections, Top 100 and native
 recommendations/More are covered. Search and its More pages, favorites, history,
@@ -72,8 +75,8 @@ activities. Filtering never changes MyShows marks.
 MyShows IDs are never treated as TMDB IDs. Without a verified mapping, matching
 requires a unique media type, literal title and exact year. Unknown or ambiguous
 cards stay visible. Conflicting explicit original titles keep the card visible
-even when localized titles and years match. Hidden pages are drained until
-visible cards or real source
+even when localized titles and years match. Following pages are read until
+the original batch size is reached or real source
 exhaustion; Top 100 is not extended beyond its original hundred. Disabling the
 switch restores the original cards and order.
 
