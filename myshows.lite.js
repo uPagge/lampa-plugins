@@ -1,6 +1,6 @@
 (function() {
     "use strict";
-    var VERSION = "1.0.15";
+    var VERSION = "1.0.16";
     if (window.__myshowsPluginStarted) return;
     window.__myshowsPluginStarted = VERSION;
     var DEFAULT_ADD_THRESHOLD = "0";
@@ -358,7 +358,7 @@
         });
         return copy;
     }
-    function watchedPayload(payload, request, index, callback) {
+    function watchedPayload(payload, request, index, callback, refillRow) {
         if (Array.isArray(payload)) {
             if (!payload.length) {
                 callback(payload);
@@ -367,7 +367,9 @@
             var rows = new Array(payload.length), left = payload.length;
             payload.forEach(function(row, i) {
                 var source = row && (row.source || request.source || Lampa.Storage.field("source"));
-                if (!row || row.query || !watchedUrl(row.url, source) && row._myshows_recommendation !== _watchedRecommendationProvenance) done(row, i); else watchedPayload(row, request, index, function(result) {
+                if (!row || row.query || !watchedUrl(row.url, source) && row._myshows_recommendation !== _watchedRecommendationProvenance) done(row, i); else if (refillRow && index.mode === "hide") refillRow(row, source, function(result) {
+                    done(result, i);
+                }); else watchedPayload(row, request, index, function(result) {
                     done(result, i);
                 });
             });
@@ -466,6 +468,8 @@
         Lampa.ContentRows.call = wrapped;
     }
     function patchWatchedDiscovery() {
+        var listProducer = Lampa.Api.list;
+        var recommendationProducer = Lampa.Recomends && Lampa.Recomends.page;
         var hooks = [ "main", "category", "list" ].map(function(method) {
             return {
                 api: Lampa.Api,
@@ -513,13 +517,116 @@
                     }
                     if (activityHandle && !activityCurrent()) setTimeout(deliverError, 0); else deliverError();
                 }
-                function loadList(nextRequest) {
-                    var called = false;
-                    return original.call(owner, nextRequest, function(data) {
-                        if (called) return;
-                        called = true;
-                        accept(data, nextRequest);
-                    }, fail);
+                function refillPage(data, sourceRequest, producer, receiver, done, error, sample) {
+                    if (!data || !Array.isArray(data.results) || !data.results.length) {
+                        watchedPayload(data, request, index, done);
+                        return;
+                    }
+                    var target = data.results.length, result = watchedCopy(data), cards = [], identities = {}, pages = {};
+                    function identity(card) {
+                        if (!card || typeof card.id !== "number" && typeof card.id !== "string" || card.id === "" || typeof card.id === "number" && !isFinite(card.id)) return "";
+                        var type = card.media_type || (card.first_air_date && !card.release_date ? "tv" : card.release_date && !card.first_air_date ? "movie" : "");
+                        return /^(movie|tv)$/.test(type) ? type + ":" + card.id : "";
+                    }
+                    function finish() {
+                        result.results = cards;
+                        done(result);
+                    }
+                    function failed() {
+                        if (!current() || delivered) return;
+                        if (!cards.length) {
+                            error.apply(this, arguments);
+                            return;
+                        }
+                        Lampa.Noty.show("MyShows: не удалось добрать карточки. Повторите загрузку каталога.");
+                        finish();
+                    }
+                    function consume(payload, params, first) {
+                        if (!current() || delivered) return;
+                        if (!payload || !Array.isArray(payload.results)) {
+                            failed();
+                            return;
+                        }
+                        var page = first && sample ? 0 : +payload.page || +params.page || 1;
+                        if (pages[page]) {
+                            finish();
+                            return;
+                        }
+                        pages[page] = true;
+                        watchedPayload(payload, request, index, function(filtered) {
+                            if (!current() || delivered) return;
+                            if (first && filtered.results.length >= target) {
+                                done(filtered);
+                                return;
+                            }
+                            filtered.results.forEach(function(card) {
+                                var key = identity(card);
+                                if (!first && key && identities[key]) return;
+                                cards.push(card);
+                                if (!first && key) identities[key] = true;
+                            });
+                            payload.results.forEach(function(card) {
+                                var key = identity(card);
+                                if (key) identities[key] = true;
+                            });
+                            if (!sample) {
+                                result.page = page;
+                                if (payload.total_pages !== undefined) result.total_pages = payload.total_pages;
+                                if (payload.total_results !== undefined) result.total_results = payload.total_results;
+                            }
+                            if (cards.length >= target || !payload.results.length || !(+payload.total_pages > page) || typeof producer !== "function") {
+                                finish();
+                                return;
+                            }
+                            var next = watchedCopy(params);
+                            next.page = page + 1;
+                            setTimeout(function() {
+                                if (!current() || delivered) return;
+                                var called = false;
+                                producer.call(receiver, next, function(value) {
+                                    if (called) return;
+                                    called = true;
+                                    consume(value, next, false);
+                                }, function() {
+                                    if (called) return;
+                                    called = true;
+                                    failed.apply(this, arguments);
+                                });
+                            }, 0);
+                        });
+                    }
+                    consume(data, sourceRequest, true);
+                }
+                function refillRow(row, source, done) {
+                    var params = watchedCopy(request), producer, receiver, sample = false;
+                    if (row._myshows_recommendation === _watchedRecommendationProvenance) {
+                        var media = method === "main" ? "movie" : request.url;
+                        if (!/^(movie|tv)$/.test(media || "")) {
+                            watchedPayload(row, request, index, done);
+                            return;
+                        }
+                        params = {
+                            component: "recomend",
+                            media: media,
+                            page: 1
+                        };
+                        producer = recommendationProducer;
+                        receiver = Lampa.Recomends;
+                        sample = true;
+                    } else if (+row.page > 0 && +row.total_pages >= +row.page && watchedUrl(row.url, source)) {
+                        params.url = row.url;
+                        params.source = source;
+                        params.page = +row.page;
+                        producer = listProducer;
+                        receiver = Lampa.Api;
+                    } else {
+                        watchedPayload(row, request, index, done);
+                        return;
+                    }
+                    refillPage(row, params, producer, receiver, done, function() {
+                        Lampa.Noty.show("MyShows: не удалось добрать карточки. Повторите загрузку каталога.");
+                        watchedPayload(row, request, index, done);
+                    }, sample);
                 }
                 function nextBatch() {
                     if (!current() || delivered) return;
@@ -553,7 +660,7 @@
                         return;
                     }
                     if (!current() || delivered) return;
-                    watchedPayload(data, request, index, function(filtered) {
+                    function filteredData(filtered) {
                         if (!current() || delivered) return;
                         if (index.mode === "mark") {
                             deliver(filtered);
@@ -571,20 +678,9 @@
                             }
                             if (cursor) seen[cursor] = true;
                             if (filtered.length || !Array.isArray(data) || !data.length || ++batches >= 100) deliver(filtered); else setTimeout(nextBatch, 0);
-                        } else if (filtered && Array.isArray(filtered.results) && !filtered.results.length && data.results.length) {
-                            var page = +data.page || +sourceRequest.page || 1;
-                            if (seen[page] || !(+data.total_pages > page)) {
-                                deliver(filtered);
-                                return;
-                            }
-                            seen[page] = true;
-                            var nextRequest = watchedCopy(sourceRequest);
-                            nextRequest.page = page + 1;
-                            setTimeout(function() {
-                                if (current()) loadList(nextRequest);
-                            }, 0);
                         } else deliver(filtered);
-                    });
+                    }
+                    if (paginated && index.mode === "hide") refillPage(data, sourceRequest, original, owner, filteredData, fail, false); else watchedPayload(data, request, index, filteredData, refillRow);
                 }
                 var received = [], ready = false, initialCalled = false;
                 watchedIndex(!paginated || !(+request.page > 1), function(value) {
