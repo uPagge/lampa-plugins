@@ -808,11 +808,13 @@
     var _relevanceActive = 0;
     function relevanceDate(value) {
         if (typeof value !== "string") return 0;
-        var match = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))?$/.exec(value);
+        var match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):?(\d{2})))?$/.exec(value);
         if (!match) return 0;
         var day = new Date(Date.UTC(+match[1], +match[2] - 1, +match[3]));
         if (day.getUTCFullYear() !== +match[1] || day.getUTCMonth() !== +match[2] - 1 || day.getUTCDate() !== +match[3]) return 0;
-        var time = Date.parse(value);
+        if (match[4] !== undefined && (+match[4] > 23 || +match[5] > 59 || +match[6] > 59 || +match[8] > 23 || +match[9] > 59)) return 0;
+        var normalized = value.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+        var time = Date.parse(normalized);
         return isFinite(time) && time > 0 && time <= Date.now() ? time : 0;
     }
     function relevanceHistory() {
@@ -872,6 +874,7 @@
                                 Log.warn("MyShows viewing history unavailable");
                                 entry.checked = Date.now() - 354e4;
                             }
+                            entry.dateParser = 2;
                             map[request.id] = entry;
                             setProfileSetting("myshows_relevance_history", map, false);
                         }
@@ -905,7 +908,7 @@
         }
         Object.keys(ids).forEach(function(id) {
             var entry = map[id] || {};
-            if (entry.checked && Date.now() - entry.checked < 36e5) return;
+            if (entry.dateParser === 2 && entry.checked && Date.now() - entry.checked < 36e5) return;
             waiting++;
             var key = context.generation + ":" + context.profile + ":" + id + ":" + (entry.version || 0);
             if (_relevancePending[key]) {
