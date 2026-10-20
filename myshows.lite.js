@@ -1,6 +1,6 @@
 (function() {
     "use strict";
-    var VERSION = "1.0.12";
+    var VERSION = "1.0.17";
     var DEFAULT_ADD_THRESHOLD = "0";
     var DEFAULT_MIN_PROGRESS = 90;
     var API_URL = "https://myshows.me/v3/rpc/";
@@ -164,11 +164,13 @@
     var _relevanceActive = 0;
     function relevanceDate(value) {
         if (typeof value !== "string") return 0;
-        var match = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))?$/.exec(value);
+        var match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):?(\d{2})))?$/.exec(value);
         if (!match) return 0;
         var day = new Date(Date.UTC(+match[1], +match[2] - 1, +match[3]));
         if (day.getUTCFullYear() !== +match[1] || day.getUTCMonth() !== +match[2] - 1 || day.getUTCDate() !== +match[3]) return 0;
-        var time = Date.parse(value);
+        if (match[4] !== undefined && (+match[4] > 23 || +match[5] > 59 || +match[6] > 59 || +match[8] > 23 || +match[9] > 59)) return 0;
+        var normalized = value.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+        var time = Date.parse(normalized);
         return isFinite(time) && time > 0 && time <= Date.now() ? time : 0;
     }
     function relevanceHistory() {
@@ -228,6 +230,7 @@
                                 Log.warn("MyShows viewing history unavailable");
                                 entry.checked = Date.now() - 354e4;
                             }
+                            entry.dateParser = 2;
                             map[request.id] = entry;
                             setProfileSetting("myshows_relevance_history", map, false);
                         }
@@ -261,7 +264,7 @@
         }
         Object.keys(ids).forEach(function(id) {
             var entry = map[id] || {};
-            if (entry.checked && Date.now() - entry.checked < 36e5) return;
+            if (entry.dateParser === 2 && entry.checked && Date.now() - entry.checked < 36e5) return;
             waiting++;
             var key = context.generation + ":" + context.profile + ":" + id + ":" + (entry.version || 0);
             if (_relevancePending[key]) {
@@ -2580,21 +2583,45 @@
             Lampa.Storage.set(MAP_KEY, cleaned);
         }
     }
-    function getUnwatchedShowsWithDetails(callback, show) {
+    function getUnwatchedShowsWithDetails(callback, show, sourceRequest) {
         Log.info("getUnwatchedShowsWithDetails called");
         var requestedContext = channelContext();
         var originalCallback = callback;
+        var owner = sourceRequest && sourceRequest.activity ? sourceRequest : Lampa.Activity.active();
+        var handle = owner && owner.activity;
+        var request = sourceRequest || owner || {};
+        var source = request.source, url = request.url, page = request.page, query = request.query;
         callback = function(result) {
             if (!result || !result.shows) {
                 originalCallback(result);
                 return;
             }
             if (requestedContext.generation !== _channelGeneration || requestedContext.profile !== getProfileId() || requestedContext.token !== getProfileSetting("myshows_token", "")) return;
-            sortShows(result.shows, getProfileSetting("myshows_sort_order", "progress"));
-            originalCallback(result);
+            var delivered = false, order;
+            function signature() {
+                return result.shows.map(function(item) {
+                    return item.myshowsId || item.id || getCardName(item);
+                }).join("|");
+            }
             prepareRelevance(result.shows, requestedContext, function() {
-                reorderCardsInMyShowsSection();
+                if (getProfileSetting("myshows_sort_order", "progress") !== "relevance") return;
+                sortShows(result.shows, "relevance");
+                if (!delivered || signature() === order) return;
+                function current() {
+                    var active = Lampa.Activity.active();
+                    return channelContextCurrent(requestedContext) && getProfileSetting("myshows_sort_order", "progress") === "relevance" && handle && active && active.activity === handle && owner.activity === handle && request.source === source && request.url === url && request.page === page && request.query === query && /^(main|category|myshows_all|myshows_unwatched)$/.test(active.component || "");
+                }
+                if (!current()) return;
+                setTimeout(function() {
+                    if (!current() || typeof Lampa.Activity.replace !== "function") return;
+                    if (handle.component && typeof handle.component.beforeRefresh === "function") handle.component.beforeRefresh();
+                    if (current()) Lampa.Activity.replace();
+                }, 400);
             });
+            sortShows(result.shows, getProfileSetting("myshows_sort_order", "progress"));
+            order = signature();
+            originalCallback(result);
+            delivered = true;
         };
         if (isNpConnected() || isNpConfigured()) {
             if (!getProfileSetting("myshows_token") || !getNpToken()) {
@@ -4601,7 +4628,7 @@
             }
         }, 150);
     }
-    function addMyShowsData(data, oncomplite) {
+    function addMyShowsData(data, oncomplite, sourceRequest) {
         if (getProfileSetting("myshows_view_in_main", true)) {
             var token = getProfileSetting("myshows_token", "");
             if (token) {
@@ -4622,7 +4649,7 @@
                         data.unshift(myshowsCategory);
                     }
                     oncomplite(data);
-                });
+                }, null, sourceRequest);
                 return true;
             }
         }
@@ -4650,7 +4677,7 @@
         var originalTMDBMain = Lampa.Api.sources.tmdb.main;
         Lampa.Api.sources.tmdb.main = function(params, oncomplite, onerror) {
             return originalTMDBMain.call(this, params, function(data) {
-                addMyShowsData(data, oncomplite);
+                addMyShowsData(data, oncomplite, params);
             }, onerror);
         };
     }
@@ -4660,7 +4687,7 @@
         var originalCUBMain = Lampa.Api.sources.cub.main;
         Lampa.Api.sources.cub.main = function(params, oncomplite, onerror) {
             var originalLoadPart = originalCUBMain.call(this, params, function(data) {
-                addMyShowsData(data, oncomplite);
+                addMyShowsData(data, oncomplite, params);
             }, onerror);
             return originalLoadPart;
         };
@@ -5839,7 +5866,7 @@
             var PAGE_SIZE = 20;
             var currentPage = object.page || 1;
             var cacheKey = "unwatched_raw";
-            if (useNpServer()) {
+            if (useNpServer() && getProfileSetting("myshows_sort_order", "progress") !== "relevance") {
                 loadCacheFromServer("unwatched_serials", "shows", function(response) {
                     if (response && response.results) {
                         var all = response.results;
@@ -5869,7 +5896,7 @@
                     if (onerror) onerror();
                     return;
                 }
-                if (!cachedShuffledItems[cacheKey]) {
+                if (!cachedShuffledItems[cacheKey] || getProfileSetting("myshows_sort_order", "progress") === "relevance") {
                     cachedShuffledItems[cacheKey] = result.shows.slice();
                 }
                 var cached = cachedShuffledItems[cacheKey];
@@ -5881,7 +5908,7 @@
                     total_pages: totalPages,
                     total_results: cached.length
                 });
-            });
+            }, null, object);
         }
         Log.info("=== ApiMyShows Factory END ===");
         return {
@@ -5923,7 +5950,7 @@
                     getUnwatchedShowsWithDetails(function(result) {
                         allData.unwatched = result;
                         checkComplete("unwatched");
-                    });
+                    }, null, object);
                     Api.myshowsWatchlist({
                         page: 1
                     }, function(result) {
@@ -6295,13 +6322,6 @@
         if (event.data && event.data.title && event.data.title.indexOf("MyShows") !== -1) {
             if (event.type === "create") {
                 _myShowsLine = event.line || null;
-                if (event.data && event.data.results && event.line) {
-                    event.data.results.forEach(function(show) {
-                        if (!show.ready && event.line.append) {
-                            event.line.append(show);
-                        }
-                    });
-                }
                 var shows = event.data && event.data.results;
                 if (shows && shows.length) {
                     setTimeout(function() {
