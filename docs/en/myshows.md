@@ -92,6 +92,9 @@ intercepted.
 Choose **По актуальности** (By relevance) in series sorting. Shows rank by the
 newer of their last episode viewing date and latest released unwatched episode
 date, descending. Ties use alphabetical order. Progress remains the default.
+The list appears immediately using known dates. If loaded history changes the
+order, the current page refreshes through Lampa: a recent show enters the first
+20 cards, and More uses the complete updated order.
 
 This mode requests MyShows viewing history for sorting. Dates are stored locally per
 profile and retained after completing a show; NP cards without dates use known

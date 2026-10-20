@@ -11,7 +11,7 @@ function launch(options = {}) {
         myshows_token_profile_a: 'test-token', myshows_android_tv_profile_a: 'true',
         myshows_calendar_profile_a: 'false', myshows_sort_order_profile_a: 'alphabet',
         myshows_unwatched_serials_profile_a: {shows: JSON.parse(JSON.stringify(options.cards || []))}, ...options.storage}));
-    const handlers = {}, domHandlers = {}, timers = [], requests = [], calls = [], params = [], notices = [];
+    const handlers = {}, domHandlers = {}, timers = [], requests = [], calls = [], params = [], notices = [], components = {};
     const bus = {follow(name, fn) { (handlers[name] ||= []).push(fn); }};
     const element = {length: 0, querySelector: () => null, querySelectorAll: () => [],
         classList: {add(){}, remove(){}, contains(){return false;}}, style: {},
@@ -48,7 +48,7 @@ function launch(options = {}) {
         Activity: {active: () => active, push(){}, replace(){}, ...options.activity},
         Utils: {addUrlComponent: (u) => u, hash: () => 'hash'},
         TMDB: {key: () => 'public-test-key', api: u => 'https://tmdb.invalid/' + u},
-        Component: {add(){}}, Template: {add(){}}, Manifest: {},
+        Maker: options.maker, Arrays:{shuffle:array=>array}, Component: {add(name, factory){components[name]=factory;}}, Template: {add(){}}, Manifest: {},
         Timeline: {listener: bus}, Noty: {show: message => notices.push(message)},
         Lang: {translate: x => x, add(){}}};
     const AndroidJS = options.bridge === 'missing' ? undefined : options.bridge === 'old' ? {} : {
@@ -120,7 +120,7 @@ function launch(options = {}) {
     const selectSetting=(key,value)=>{const elem=settingElement(key);context.__nativeSettingsContract.bind(elem);elem.enter();
         const item=context.__nativeSelect.items.find(item=>item.value===value);assert.ok(item,'native select option '+value);
         context.__nativeSelect.onSelect(item);return elem.label;};
-    return {context, data, calls, requests, timers, run, setting, params, answer, answerUrl, changeProfile, notices, emit,settingLabel,toggleSetting,selectSetting,
+    return {context, data, calls, requests, timers, run, setting, params, answer, answerUrl, changeProfile, notices, emit,settingLabel,toggleSetting,selectSetting,components,
         emitDom(name,target){(domHandlers[name] || []).forEach(fn=>fn({target}));},
         setActive(value) { active = value; }};
 }
@@ -1277,4 +1277,123 @@ test('fresh relevance list returns once before viewing history completes', () =>
     assert.deepEqual(results,[[1]],'enriched fresh list returns while history remains pending');
     answerHistory(app,10,history('2020-01-02'));
     assert.deepEqual(results,[[1]],'history updates cards without another list callback');
+});
+
+// Native lazy Line must be rebuilt from the complete newly sorted list, not DOM-sorted.
+function relevanceHome(options = {}) {
+    let rows, rebuilds = 0, line;
+    const source = {main(request, done) { done([]); }};
+    const app = launch({bridge:'missing',nativeActivity:true,cards:Array.from({length:21},(_,i)=>({
+        id:i+1,myshowsId:i+1,name:i===20?'Zulu':'Alpha '+String(i).padStart(2,'0')})),
+        storage:{myshows_sort_order_profile_a:'relevance',...options.storage},
+        api:{sources:{tmdb:source,cub:{main(){}}}}});
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname,'fixtures/lampa-line-items-contract.js'),'utf8'),app.context);
+    const items = app.context.__nativeLineItemsContract;
+    function build(data) {
+        rows=data;
+        line={data:rows[0],params:{items:{view:7}},scroll:{body:()=>({addClass(){}}),append(){},update(){},render(){}},
+            has:()=>false,emit(name,card){ if(name==='createAndAppend') {
+                const render={on(){}};const item={data:card,render:()=>render,destroy(){}};
+                items.onAppend.call(line,item,{params:{}});
+            }}};
+        items.onInit.call(line);items.onCreate.call(line);
+    }
+    const target={component:'main',source:'tmdb'};
+    target.activity={...app.context.__nativeActivityLifecycleContract,component:{},loader(){}};
+    app.setActive(target);app.run(50);
+    app.context.Lampa.Activity.own=component=>component===target.activity.component;
+    app.context.Lampa.Activity.replace=()=>{rebuilds++;target.activity.waite_refresh=false;load();};
+    function load(){app.context.Lampa.Api.sources.tmdb.main(target,build,assert.fail);}
+    load();
+    return {...app,target,load,rows:()=>rows,line:()=>line,rebuilds:()=>rebuilds,scroll(){items.onScroll.call(line);}};
+}
+test('relevance completion replaces first20 membership and native lazy navigation without Android',()=>{
+    const app=relevanceHome();
+    assert.equal(app.rows()[0].results[0].id,1,'early callback does not wait for history');
+    assert.equal(app.line().items.length,7);
+    for(let id=1;id<=21;id++) answerHistory(app,id,history(id===21?'2026-10-20T12:00:00Z':null));
+    app.run(400);
+    assert.equal(app.rebuilds(),1);
+    assert.equal(app.rows()[0].results[0].id,21,'recent show beyond first page enters home');
+    assert.equal(app.line().items[0].data.id,21,'native backing and DOM share order');
+    app.line().active=6;app.scroll();
+    assert.deepEqual(Array.from(app.line().items,c=>c.data.id),Array.from(app.rows()[0].results.slice(0,15),c=>c.id));
+    assert.equal(app.requests.filter(r=>r.body?.method==='profile.Episodes').length,0,'refresh reuses ready history');
+    assert.equal(app.timers.filter(t=>t.delay===400).length,0,'no refresh loop');
+});
+for(const change of ['navigation','profile','account','source'])test('relevance completion cannot refresh stale '+change,()=>{
+    const app=relevanceHome();
+    if(change==='navigation') app.setActive({component:'main',activity:{refresh(){assert.fail('wrong screen');}}});
+    if(change==='profile') app.changeProfile('b');
+    if(change==='account') app.data.set('myshows_token_profile_a','replacement');
+    if(change==='source') app.target.source='cub';
+    for(let id=1;id<=21;id++) {
+        const index=app.requests.findIndex(r=>r.body?.method==='profile.Episodes'&&r.body.params.showId===id);
+        if(index>=0) app.requests.splice(index,1)[0].success(history(id===21?'2026-10-20T12:00:00Z':null));
+    }
+    assert.equal(app.timers.filter(t=>t.delay===400).length,0);
+});
+
+test('relevance cached release metadata sorts before the one fast callback',()=>{
+    const app=launch({bridge:'missing',cards:[{id:1,myshowsId:1,name:'Alpha'},
+        {id:2,myshowsId:2,name:'Zulu',last_episode_to_myshows:{air_date:'2020-01-01'}}],
+        storage:{myshows_sort_order_profile_a:'relevance',myshows_relevance_history_profile_a:{
+            1:{checked:Date.now()},2:{checked:Date.now()}}}});
+    let count=0, ids;
+    app.context.MyShows.getUnwatchedShowsWithDetails(result=>{count++;ids=Array.from(result.shows,c=>c.id);});
+    assert.equal(count,1);assert.deepEqual(ids,[2,1]);
+    assert.equal(app.requests.filter(r=>r.body?.method==='profile.Episodes').length,0);
+});
+function relevanceMore(options={}) {
+    let built, hooks;
+    const maker={module:()=>({MASK:{base:1},toggle(){return this;},only(){return this;}}),
+        make(){return {use(value){hooks=value;},activity:{loader(){}},build(result){built=result;},empty(){}};}};
+    const app=launch({bridge:'missing',maker,cards:options.cards||cards,np:options.np,
+        storage:{myshows_sort_order_profile_a:'relevance',...options.storage}});
+    app.run(50);
+    const target={component:'myshows_unwatched',page:1,activity:{refresh(){app.context.refreshes=(app.context.refreshes||0)+1;}}};
+    app.setActive(target);
+    const comp=app.components.myshows_unwatched(target);hooks.onCreate.call(comp);
+    return {...app,target,reload(){const comp=app.components.myshows_unwatched(target);hooks.onCreate.call(comp);},built:()=>built};
+}
+test('unwatched More rebuild uses newly sorted full list instead of frozen raw cache',()=>{
+    const app=relevanceMore();assert.deepEqual(Array.from(app.built().results,c=>c.id),[1,2]);
+    answerHistory(app,10,history(null));answerHistory(app,20,history('2026-10-20T12:00:00Z'));
+    assert.equal(app.context.refreshes,1);app.reload();
+    assert.deepEqual(Array.from(app.built().results,c=>c.id),[2,1]);
+});
+test('NP unwatched More relevance uses complete normalized shows and history before paging',()=>{
+    const app=relevanceMore({np:true});
+    while(!app.built()) app.answerUrl('/myshows/watching?',{results:cards});
+    assert.deepEqual(Array.from(app.built().results,c=>c.id),[1,2]);
+    answerHistory(app,10,history(null));answerHistory(app,20,history('2026-10-20T12:00:00Z'));
+    assert.equal(app.context.refreshes,1);app.reload();
+    app.answerUrl('/myshows/watching?',{results:cards});
+    assert.deepEqual(Array.from(app.built().results,c=>c.id),[2,1]);
+});
+
+test('unchanged or failed relevance scores retain initial native row without redundant refresh',()=>{
+    const app=relevanceHome({storage:{myshows_relevance_history_profile_a:{21:{watch:1,checked:1}}}});
+    for(let id=1;id<=21;id++) answerHistory(app,id,id===21?{error:{code:500}}:history(null));
+    assert.equal(app.timers.filter(t=>t.delay===400).length,0);
+    assert.equal(app.line().items.length,7);
+    assert.equal(app.data.get('myshows_relevance_history_profile_a')[21].watch,1);
+});
+test('MyShows full landing rebuild slices the authoritative relevance first20',()=>{
+    let hooks,built;
+    const maker={module:()=>({only(){return this;}}),make(){return {use(value){hooks=value;},
+        activity:{loader(){}},build(result){built=result;},empty(){}};}};
+    const list=Array.from({length:21},(_,i)=>({id:i+1,myshowsId:i+1,name:i===20?'Zulu':'Alpha '+i}));
+    const app=launch({bridge:'missing',maker,cards:list,storage:{myshows_sort_order_profile_a:'relevance'}});
+    app.run(50);
+    const target={component:'myshows_all',activity:{refresh(){app.context.refreshes=(app.context.refreshes||0)+1;}}};
+    app.setActive(target);
+    function load(){const comp=app.components.myshows_all(target);hooks.onCreate.call(comp);
+        while(app.requests.some(r=>r.body&&['profile.Shows','profile.UnwatchedMovies','profile.WatchedMovies'].includes(r.body.method))) {
+            const i=app.requests.findIndex(r=>r.body&&['profile.Shows','profile.UnwatchedMovies','profile.WatchedMovies'].includes(r.body.method));
+            app.requests.splice(i,1)[0].success({result:[]});
+        }}
+    load();assert.ok(built);assert.equal(built[0].results.length,20);assert.notEqual(built[0].results[0].id,21);
+    for(let id=1;id<=21;id++)answerHistory(app,id,history(id===21?'2026-10-20T12:00:00Z':null));
+    assert.equal(app.context.refreshes,1);load();assert.equal(built[0].results[0].id,21);
 });
