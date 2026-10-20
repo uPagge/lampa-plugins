@@ -507,6 +507,76 @@ test('localized fallback never assigns status to a different non-Latin original'
     app.answer('movies.GetCatalog',{result:[{movie:{id:601,title:'Локальное название',titleOriginal:'Другой фильм',year:2020}}]});
     assert.equal(success,false);assert.equal(app.requests.filter(r=>r.body?.method==='manage.SetMovieStatus').length,0);
 });
+for(const method of ['main','category','list']) test('native create-before-push binds '+method+' to its target activity and rejects next navigation',()=>{
+    for(const previous of [null,{component:'main',activity:{refresh(){}}}]) {
+    let sourceDone,delivered=0,targetRefreshes=0;
+    const payload=method==='list'?{page:1,total_pages:1,results:[seenCard,unseenCard]}:
+        [{url:'movie/popular',source:'tmdb',results:[seenCard,unseenCard]}];
+    // A real activity receives its handle before Component.create invokes Api,
+    // but Activity.push only changes the active stack after creation returns.
+    const target={source:method==='list'?'cub':'tmdb',component:method==='list'?'category_full':method,
+        url:method==='main'?'':method==='category'?'movie':'top/hundred/movie',page:1,
+        activity:{refresh(){targetRefreshes++;}}};
+    // Use the existing public wrapper with a source-boundary function from launch.
+    const native=discovery({api:{[method](request,done){sourceDone=done;return 'source-handle';}}});
+    native.setActive(previous);
+    native.context.Lampa.Api[method](target,()=>delivered++,assert.fail);
+    native.setActive(target);sourceDone(payload);native.index();
+    assert.equal(delivered,1,'response belongs to the newly pushed target');
+    native.run(2000);native.setting('myshows_hide_watched').onChange(false);
+    assert.equal(targetRefreshes,1,'refresh tracks target rather than previous activity');
+    native.setting('myshows_hide_watched').onChange(true);
+    native.context.Lampa.Api[method](target,()=>delivered++,assert.fail);
+    native.setActive({component:'search',activity:{}});sourceDone(payload);native.index();
+    assert.equal(delivered,1,'next navigation rejects the old target response');
+    }
+});
+test('synchronous native source/index callbacks wait until target is pushed before delivery',()=>{
+    const app=discovery();app.context.Lampa.Reguest=function(){this.silent=(url,done,error,body)=>{
+        const method=JSON.parse(body).method;done({result:method==='profile.WatchedMovies'?[watchedMovie]:[]});};};
+    const previous={component:'main',activity:{}},target={...topRequest,component:'category_full',activity:{}};
+    app.setActive(previous);let output;
+    app.context.Lampa.Api.list(target,value=>output=value,assert.fail);
+    assert.equal(output,undefined,'component is not on active stack during create');
+    app.setActive(target);app.flush();assert.deepEqual(Array.from(output.results,c=>c.id),[2]);
+});
+test('native create-before-push source error is deferred for target and cancelled on request mutation',()=>{
+    for(const mutate of [false,true]) {
+        let failures=0;
+        const app=discovery({api:{list(request,done,error){error(new Error('source unavailable'));}}});
+        const target={...topRequest,component:'category_full',activity:{}};
+        app.setActive({component:'main',activity:{}});
+        app.context.Lampa.Api.list(target,assert.fail,()=>failures++);
+        assert.equal(failures,0);app.setActive(target);
+        if(mutate)target.url='search/movie';
+        app.flush();assert.equal(failures,mutate?0:1);
+    }
+});
+test('built-in CUB collection rows and More list hide watched cards; custom source stays complete',()=>{
+    const app=discovery({api:{main(request,done){done([{url:'collections/123',source:'cub',results:[seenCard,unseenCard]},
+        {url:'collections/123',source:'custom',results:[seenCard]}]);}}});let output;
+    app.context.Lampa.Api.main({source:'cub'},v=>output=v,assert.fail);app.index();
+    assert.deepEqual(Array.from(output,row=>Array.from(row.results,c=>c.id)),[[2],[1]]);
+    app.context.Lampa.Api.list({...topRequest,url:'collections/123'},v=>output=v,assert.fail);app.index();
+    assert.deepEqual(Array.from(output.results,c=>c.id),[2]);
+});
+for(const type of ['movie','tv']) test('conflicting explicit originals keep '+type+' visible despite matching localized title/year',()=>{
+    const card=type==='movie'?{id:1,media_type:'movie',title:'Брат',original_title:'存在しない映画のテスト',release_date:'1997-01-01'}:
+        {id:1,media_type:'tv',name:'Брат',original_name:'存在しない映画のテスト',first_air_date:'1997-01-01'};
+    const match={id:10,title:'Брат',titleOriginal:'Brat',year:1997};
+    const app=discovery({pages:[{results:[card]}]});let output;
+    app.context.Lampa.Api.list({...topRequest,url:'top/hundred/'+type},v=>output=v,assert.fail);
+    app.index(type==='movie'?[match]:[],type==='tv'?[{show:match,watchStatus:'finished'}]:[]);
+    assert.ok(output,'contradictory identity does not request completion details');
+    assert.deepEqual(Array.from(output.results,c=>c.id),[1]);
+});
+for(const missing of ['card','summary']) test('localized title and exact year remain valid when '+missing+' original is absent',()=>{
+    const card={...seenCard,original_title:missing==='card'?undefined:'Seen Original'};
+    const summary={...watchedMovie,titleOriginal:missing==='summary'?undefined:'Seen Original'};
+    const app=discovery({pages:[{results:[card,unseenCard]}]});let output;
+    app.context.Lampa.Api.list({...topRequest},v=>output=v,assert.fail);app.index([summary]);
+    assert.deepEqual(Array.from(output.results,c=>c.id),[2]);
+});
 test('series hides only after all released episode ids are confirmed in full history',()=>{
     const app=discovery({pages:[{results:[tvCard,unseenCard]}]});let output;
     app.context.Lampa.Api.list({...topRequest,url:'top/hundred/tv'},v=>output=v,assert.fail);
