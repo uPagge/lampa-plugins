@@ -216,9 +216,23 @@
         }
     }
 
-    function watchedIndex(reset, callback) {
+    function watchedIndex(reset, callback, loadingActivity) {
         var index = _watchedIndex;
         if (index && (!channelContextCurrent(index.context) || (reset && index.ready))) {
+            // Native Back resumes retained components without another source
+            // call. Retire their old marks through native deferred refresh.
+            // Wait until create-before-push completes: refreshing the previous
+            // active slide synchronously could schedule replacement of the new one.
+            if (index.mode === 'mark') {
+                var archived = _watchedActivities.filter(function(object) {
+                    return object !== loadingActivity && (!loadingActivity || object.activity !== loadingActivity.activity);
+                });
+                if (archived.length) setTimeout(function() {
+                    archived.forEach(function(object) {
+                        if (object.activity && typeof object.activity.refresh === 'function') object.activity.refresh();
+                    });
+                }, 0);
+            }
             invalidateWatched();
             index = null;
         }
@@ -578,7 +592,7 @@
                 watchedIndex(!paginated || !(+request.page > 1), function(value) {
                     index = value; ready = true;
                     received.forEach(function(data) { accept(data, request); }); received = [];
-                });
+                }, activity);
                 continuation = original.call(owner, request, function(data) {
                     if (initialCalled) return;
                     initialCalled = true;
