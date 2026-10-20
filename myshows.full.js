@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.0.16';
+    var VERSION = '1.0.17';
 
     // Registry migrations may leave a second copy in the current load queue.
     if (window.__myshowsPluginStarted) return;
@@ -3736,19 +3736,42 @@
         }
     }
 
-    function getUnwatchedShowsWithDetails(callback, show) {
+    function getUnwatchedShowsWithDetails(callback, show, sourceRequest) {
         Log.info('getUnwatchedShowsWithDetails called');
         var requestedContext = channelContext();
         var originalCallback = callback;
+        // Native components are created before Activity.push activates them.
+        // Bind to the request handle, not the previous screen on the stack.
+        var owner = sourceRequest && sourceRequest.activity ? sourceRequest : Lampa.Activity.active();
+        var handle = owner && owner.activity;
+        var request = sourceRequest || owner || {};
+        var source = request.source, url = request.url, page = request.page, query = request.query;
         callback = function(result) {
             if (!result || !result.shows) { originalCallback(result); return; }
             if (requestedContext.generation !== _channelGeneration || requestedContext.profile !== getProfileId() ||
                 requestedContext.token !== getProfileSetting('myshows_token', '')) return;
-            sortShows(result.shows, getProfileSetting('myshows_sort_order', 'progress'));
-            originalCallback(result);
+            var delivered = false, order;
+            function signature() {
+                return result.shows.map(function(item) { return item.myshowsId || item.id || getCardName(item); }).join('|');
+            }
+            // Cached history and fresh release metadata must participate BEFORE
+            // consumers slice the first page. Async history keeps the fast callback.
             prepareRelevance(result.shows, requestedContext, function() {
-                reorderCardsInMyShowsSection();
+                if (getProfileSetting('myshows_sort_order', 'progress') !== 'relevance') return;
+                sortShows(result.shows, 'relevance');
+                if (!delivered || signature() === order) return;
+                var active = Lampa.Activity.active();
+                if (!handle || !active || active.activity !== handle || owner.activity !== handle ||
+                    request.source !== source || request.url !== url || request.page !== page || request.query !== query ||
+                    !/^(main|category|myshows_all|myshows_unwatched)$/.test(active.component || '')) return;
+                // Replacing through ActivitySlide refresh rebuilds native Line.items,
+                // its lazy results and focus/navigation together; DOM sorting cannot.
+                if (typeof handle.refresh === 'function') handle.refresh();
             });
+            sortShows(result.shows, getProfileSetting('myshows_sort_order', 'progress'));
+            order = signature();
+            originalCallback(result);
+            delivered = true;
         };
 
         // isNpConfigured(): читаем с NP по настройке, не дожидаясь пинга — иначе на
@@ -6566,7 +6589,7 @@
         }, 150);
     }
 
-    function addMyShowsData(data, oncomplite) {
+    function addMyShowsData(data, oncomplite, sourceRequest) {
         if (getProfileSetting('myshows_view_in_main', true)) {
             var token = getProfileSetting('myshows_token', '');
 
@@ -6589,7 +6612,7 @@
                         data.unshift(myshowsCategory);
                     }
                     oncomplite(data);
-                });
+                }, null, sourceRequest);
                 return true;
             }
         }
@@ -6625,7 +6648,7 @@
 
         Lampa.Api.sources.tmdb.main = function(params, oncomplite, onerror) {
             return originalTMDBMain.call(this, params, function(data) {
-                addMyShowsData(data, oncomplite);
+                addMyShowsData(data, oncomplite, params);
             }, onerror);
         };
     }
@@ -6639,7 +6662,7 @@
 
         Lampa.Api.sources.cub.main = function(params, oncomplite, onerror) {
             var originalLoadPart = originalCUBMain.call(this, params, function(data) {
-                addMyShowsData(data, oncomplite);
+                addMyShowsData(data, oncomplite, params);
             }, onerror);
 
             return originalLoadPart;
@@ -8148,7 +8171,7 @@
             var currentPage = object.page || 1;
             var cacheKey = 'unwatched_raw';
 
-            if (useNpServer()) {
+            if (useNpServer() && getProfileSetting('myshows_sort_order', 'progress') !== 'relevance') {
                 // Сервер отдаёт все карточки сразу — пагинируем на клиенте
                 loadCacheFromServer('unwatched_serials', 'shows', function(response) {
                     if (response && response.results) {
@@ -8179,7 +8202,7 @@
                     if (onerror) onerror();
                     return;
                 }
-                if (!cachedShuffledItems[cacheKey]) {
+                if (!cachedShuffledItems[cacheKey] || getProfileSetting('myshows_sort_order', 'progress') === 'relevance') {
                     cachedShuffledItems[cacheKey] = result.shows.slice();
                 }
                 var cached = cachedShuffledItems[cacheKey];
@@ -8191,7 +8214,7 @@
                     total_pages: totalPages,
                     total_results: cached.length
                 });
-            });
+            }, null, object);
         }
 
         Log.info('=== ApiMyShows Factory END ===');
@@ -8246,7 +8269,7 @@
                     getUnwatchedShowsWithDetails(function(result) {
                         allData.unwatched = result;
                         checkComplete('unwatched');
-                    });
+                    }, null, object);
 
                     Api.myshowsWatchlist({ page: 1 }, function(result) {
                         allData.watchlist = result;
@@ -8668,15 +8691,6 @@
                 // Запоминаем инстанс линии — через него вставляем новые карточки штатно
                 // (createAndAppend → попадают в this.items, навигация их видит).
                 _myShowsLine = event.line || null;
-
-                // Принудительно создаем все карточки после создания Line
-                if (event.data && event.data.results && event.line) {
-                    event.data.results.forEach(function(show) {
-                        if (!show.ready && event.line.append) {
-                            event.line.append(show);
-                        }
-                    });
-                }
 
                 // На медленных платформах (WebOS, старый Android) visible стреляет
                 // раньше, чем Lampa записывает card_data на DOM-элемент.
