@@ -1,6 +1,8 @@
 (function() {
     "use strict";
-    var VERSION = "1.0.12";
+    var VERSION = "1.0.13";
+    if (window.__myshowsPluginStarted) return;
+    window.__myshowsPluginStarted = VERSION;
     var DEFAULT_ADD_THRESHOLD = "0";
     var DEFAULT_MIN_PROGRESS = 90;
     var API_URL = "https://myshows.me/v3/rpc/";
@@ -79,6 +81,389 @@
     var _channelGeneration = 0;
     var _channelShows = null;
     var _channelPublication = 0;
+    var _watchedIndex = null;
+    var _watchedEpoch = 0;
+    var _watchedActivities = [];
+    function watchedEnabled() {
+        var value = getProfileSetting("myshows_hide_watched", false);
+        return (value === true || value === "true") && !!getProfileSetting("myshows_token", "");
+    }
+    function invalidateWatched() {
+        _watchedEpoch++;
+        _watchedIndex = null;
+    }
+    function watchedRefresh() {
+        invalidateWatched();
+        var active = Lampa.Activity.active();
+        var refreshed = false;
+        _watchedActivities.forEach(function(object) {
+            if (object.activity && typeof object.activity.refresh === "function") {
+                object.activity.refresh();
+                if (object === active) refreshed = true;
+            }
+        });
+        if (!refreshed && active && /^(main|category|category_full)$/.test(active.component || "") && watchedRequest(active, active.component === "main" ? "main" : active.component === "category" ? "category" : "list") && typeof Lampa.Activity.refresh === "function") Lampa.Activity.refresh();
+    }
+    function watchedCurrent(index) {
+        return index && index === _watchedIndex && index.epoch === _watchedEpoch && channelContextCurrent(index.context) && watchedEnabled();
+    }
+    function watchedError(index) {
+        if (!index.notified) {
+            index.notified = true;
+            Lampa.Noty.show("MyShows: не удалось проверить просмотренное. Карточки остаются видимыми.");
+        }
+    }
+    function watchedIndex(reset, callback) {
+        var index = _watchedIndex;
+        if (index && (!channelContextCurrent(index.context) || reset && index.ready)) {
+            invalidateWatched();
+            index = null;
+        }
+        if (index) {
+            if (index.ready) callback(index); else index.callbacks.push(callback);
+            return;
+        }
+        index = {
+            epoch: _watchedEpoch,
+            context: channelContext(),
+            callbacks: [ callback ],
+            ready: false,
+            movies: [],
+            shows: [],
+            details: {},
+            pending: {},
+            queue: [],
+            active: 0
+        };
+        _watchedIndex = index;
+        var remaining = 2;
+        function loaded(ok, data, key) {
+            if (!watchedCurrent(index)) return;
+            if (ok && data && Array.isArray(data.result)) index[key] = data.result; else index.failed = true;
+            if (--remaining) return;
+            index.ready = true;
+            if (index.failed) {
+                index.movies = [];
+                index.shows = [];
+                watchedError(index);
+            }
+            var callbacks = index.callbacks;
+            index.callbacks = [];
+            callbacks.forEach(function(fn) {
+                fn(index);
+            });
+        }
+        makeMyShowsJSONRPCRequest("profile.WatchedMovies", {}, function(ok, data) {
+            loaded(ok, data, "movies");
+        });
+        makeMyShowsJSONRPCRequest("profile.Shows", {}, function(ok, data) {
+            loaded(ok, data, "shows");
+        });
+    }
+    function watchedTitle(value) {
+        return typeof value === "string" ? value.toLowerCase().replace(/\s+/g, " ").trim() : "";
+    }
+    function watchedYear(value) {
+        var text = String(value || "");
+        return /^\d{4}(?:$|-\d{2}-\d{2})/.test(text) ? text.slice(0, 4) : "";
+    }
+    function watchedMatch(card, index) {
+        var type = card.media_type || (card.first_air_date && !card.release_date ? "tv" : card.release_date && !card.first_air_date ? "movie" : "");
+        if (type !== "movie" && type !== "tv") return null;
+        var year = watchedYear(type === "movie" ? card.release_date : card.first_air_date);
+        if (!year) return null;
+        var names = [ watchedTitle(card.title || card.name), watchedTitle(card.original_title || card.original_name) ];
+        var matches = {}, found = [];
+        (type === "movie" ? index.movies : index.shows).forEach(function(entry) {
+            var item = type === "tv" ? entry && entry.show : entry;
+            if (!item || !item.id || watchedYear(item.year) !== year) return;
+            var title = watchedTitle(item.title), original = watchedTitle(item.titleOriginal);
+            if (!names.some(function(name) {
+                return name && (name === title || name === original);
+            })) return;
+            if (!matches[item.id]) {
+                matches[item.id] = true;
+                found.push({
+                    type: type,
+                    item: item,
+                    status: entry.watchStatus
+                });
+            }
+        });
+        return found.length === 1 ? found[0] : null;
+    }
+    function watchedDate(value) {
+        if (typeof value !== "string") return NaN;
+        var match = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))?$/.exec(value);
+        if (!match) return NaN;
+        var day = new Date(Date.UTC(+match[1], +match[2] - 1, +match[3]));
+        if (day.getUTCFullYear() !== +match[1] || day.getUTCMonth() !== +match[2] - 1 || day.getUTCDate() !== +match[3]) return NaN;
+        return Date.parse(value);
+    }
+    function watchedComplete(details, history) {
+        if (!details || !Array.isArray(details.episodes) || !details.episodes.length || !Array.isArray(history)) return false;
+        var ids = {}, released = 0, valid = true;
+        history.forEach(function(ep) {
+            if (ep && ep.id && isFinite(watchedDate(ep.watchDate)) && watchedDate(ep.watchDate) <= Date.now()) ids[ep.id] = true;
+        });
+        details.episodes.forEach(function(ep) {
+            var date = watchedDate(ep && (ep.airDateUTC || ep.airDate));
+            if (!ep || !ep.id || !isFinite(date)) {
+                valid = false;
+                return;
+            }
+            if (date <= Date.now()) {
+                released++;
+                if (!ids[ep.id]) valid = false;
+            }
+        });
+        return valid && released > 0;
+    }
+    function watchedPump(index) {
+        while (watchedCurrent(index) && index.active < 2 && index.queue.length) {
+            (function(id) {
+                index.active++;
+                var remaining = 2, details, history, failed = false;
+                function done() {
+                    if (--remaining) return;
+                    index.active--;
+                    if (!watchedCurrent(index)) return;
+                    if (failed) watchedError(index);
+                    index.details[id] = watchedComplete(details, history);
+                    var callbacks = index.pending[id];
+                    delete index.pending[id];
+                    callbacks.forEach(function(fn) {
+                        fn(index.details[id]);
+                    });
+                    watchedPump(index);
+                }
+                makeMyShowsJSONRPCRequest("shows.GetById", {
+                    showId: +id,
+                    withEpisodes: true
+                }, function(ok, data) {
+                    if (ok && data && data.result && (!data.result.id || +data.result.id === +id)) details = data.result; else failed = true;
+                    done();
+                });
+                makeMyShowsJSONRPCRequest("profile.Episodes", {
+                    showId: +id
+                }, function(ok, data) {
+                    if (ok && data) history = data.result; else failed = true;
+                    done();
+                });
+            })(index.queue.shift());
+        }
+    }
+    function watchedCard(card, index, callback) {
+        var match = card && watchedMatch(card, index);
+        if (!match || index.failed) {
+            callback(false);
+            return;
+        }
+        if (match.type === "movie") {
+            callback(true);
+            return;
+        }
+        if (match.status !== "watching" && match.status !== "finished") {
+            callback(false);
+            return;
+        }
+        var id = match.item.id;
+        if (Object.prototype.hasOwnProperty.call(index.details, id)) {
+            callback(index.details[id]);
+            return;
+        }
+        if (index.pending[id]) {
+            index.pending[id].push(callback);
+            return;
+        }
+        index.pending[id] = [ callback ];
+        index.queue.push(id);
+        watchedPump(index);
+    }
+    function watchedUrl(url, source) {
+        if (typeof url !== "string") return false;
+        if (source === "tmdb") return /^(?:(?:movie|tv)\/(?:popular|top_rated|now_playing|upcoming|airing_today|on_the_air)|discover\/(?:movie|tv)|trending\/(?:movie|tv|all)\/(?:day|week)|(?:movie|tv)\/\d+\/(?:recommendations|similar)|collection\/\d+)(?:$|\?)/.test(url);
+        if (source === "cub") return /^top\/(?:hundred|fire)\/(?:movie|tv)(?:$|\?)/.test(url) || /^\?(?=[^#]*\bsort=)(?![^#]*\bquery=)/.test(url);
+        return false;
+    }
+    function watchedRequest(request, method) {
+        if (!request || request.query !== undefined && request.query !== null || /search|favorite|history|continue|myshows|calendar|person|episode|season/.test(request.url || "")) return false;
+        var source = request.source || Lampa.Storage.field("source");
+        if (source !== "cub" && source !== "tmdb") return false;
+        if (method === "main") return !request.url;
+        if (method === "category") return /^(movie|tv|anime)$/.test(request.url || "");
+        return watchedUrl(request.url, source);
+    }
+    function watchedCopy(value) {
+        var copy = {};
+        Object.keys(value).forEach(function(key) {
+            copy[key] = value[key];
+        });
+        return copy;
+    }
+    function watchedPayload(payload, request, index, callback) {
+        if (Array.isArray(payload)) {
+            if (!payload.length) {
+                callback(payload);
+                return;
+            }
+            var rows = new Array(payload.length), left = payload.length;
+            payload.forEach(function(row, i) {
+                var source = row && (row.source || request.source || Lampa.Storage.field("source"));
+                if (!row || row.query || !watchedUrl(row.url, source)) done(row, i); else watchedPayload(row, request, index, function(result) {
+                    done(result, i);
+                });
+            });
+            function done(row, i) {
+                rows[i] = row;
+                if (! --left) callback(rows.filter(function(item) {
+                    return !item || !item.results || item.results.length;
+                }));
+            }
+            return;
+        }
+        if (!payload || !Array.isArray(payload.results) || !payload.results.length) {
+            callback(payload);
+            return;
+        }
+        var keep = new Array(payload.results.length), remaining = keep.length;
+        payload.results.forEach(function(card, i) {
+            watchedCard(card, index, function(hide) {
+                keep[i] = !hide;
+                if (--remaining) return;
+                var copy = watchedCopy(payload);
+                copy.results = payload.results.filter(function(item, position) {
+                    return keep[position];
+                });
+                callback(copy);
+            });
+        });
+    }
+    function patchWatchedDiscovery() {
+        [ "main", "category", "list" ].forEach(function(method) {
+            var original = Lampa.Api[method];
+            if (typeof original !== "function" || original._myshowsWatched) return;
+            var wrapped = function(request, oncomplete, onerror) {
+                if (!watchedEnabled() || !watchedRequest(request, method)) return original.apply(this, arguments);
+                var owner = this, activity = Lampa.Activity.active(), context = channelContext();
+                if (activity && _watchedActivities.indexOf(activity) < 0) {
+                    _watchedActivities.push(activity);
+                    if (_watchedActivities.length > 8) _watchedActivities.shift();
+                }
+                var sourceUrl = request.url, sourceName = request.source, sourcePage = request.page, sourceQuery = request.query;
+                var continuation, sourceReturned = false, index, delivered = false;
+                var seen = {}, batches = 0;
+                function current() {
+                    return channelContextCurrent(context) && watchedCurrent(index) && Lampa.Activity.active() === activity && request.url === sourceUrl && request.source === sourceName && request.page === sourcePage && request.query === sourceQuery;
+                }
+                function fail() {
+                    if (current() && !delivered) {
+                        delivered = true;
+                        if (onerror) onerror.apply(this, arguments);
+                    }
+                }
+                function loadList(nextRequest) {
+                    var called = false;
+                    return original.call(owner, nextRequest, function(data) {
+                        if (called) return;
+                        called = true;
+                        accept(data, nextRequest);
+                    }, fail);
+                }
+                function nextBatch() {
+                    if (!current() || delivered) return;
+                    if (!sourceReturned) {
+                        setTimeout(nextBatch, 0);
+                        return;
+                    }
+                    if (typeof continuation !== "function") {
+                        deliver([]);
+                        return;
+                    }
+                    var called = false;
+                    continuation.call(owner, function(data) {
+                        if (called) return;
+                        called = true;
+                        accept(data, request);
+                    }, fail);
+                }
+                function deliver(data) {
+                    if (current() && !delivered) {
+                        delivered = true;
+                        if (method === "list" && data && +data.page > 0) request.page = sourcePage = +data.page;
+                        oncomplete(data);
+                    }
+                }
+                function accept(data, sourceRequest) {
+                    if (!current() || delivered) return;
+                    watchedPayload(data, request, index, function(filtered) {
+                        if (!current() || delivered) return;
+                        if (Array.isArray(filtered)) {
+                            var cursor = Array.isArray(data) && data.length && data.every(function(row) {
+                                return row && row.url && +row.page > 0;
+                            }) ? data.map(function(row) {
+                                return row.source + ":" + row.url + ":" + row.page;
+                            }).join("|") : "";
+                            if (cursor && seen[cursor]) {
+                                deliver(filtered);
+                                return;
+                            }
+                            if (cursor) seen[cursor] = true;
+                            if (filtered.length || !Array.isArray(data) || !data.length || ++batches >= 100) deliver(filtered); else setTimeout(nextBatch, 0);
+                        } else if (filtered && Array.isArray(filtered.results) && !filtered.results.length && data.results.length) {
+                            var page = +data.page || +sourceRequest.page || 1;
+                            if (seen[page] || !(+data.total_pages > page)) {
+                                deliver(filtered);
+                                return;
+                            }
+                            seen[page] = true;
+                            var nextRequest = watchedCopy(sourceRequest);
+                            nextRequest.page = page + 1;
+                            setTimeout(function() {
+                                if (current()) loadList(nextRequest);
+                            }, 0);
+                        } else deliver(filtered);
+                    });
+                }
+                var received = [], ready = false, initialCalled = false;
+                watchedIndex(method !== "list" || !(+request.page > 1), function(value) {
+                    index = value;
+                    ready = true;
+                    received.forEach(function(data) {
+                        accept(data, request);
+                    });
+                    received = [];
+                });
+                continuation = original.call(owner, request, function(data) {
+                    if (initialCalled) return;
+                    initialCalled = true;
+                    if (ready) accept(data, request); else if (!received.length) received.push(data);
+                }, function() {
+                    if (channelContextCurrent(context) && Lampa.Activity.active() === activity && !delivered) {
+                        delivered = true;
+                        if (onerror) onerror.apply(this, arguments);
+                    }
+                });
+                sourceReturned = true;
+                if (typeof continuation !== "function") return continuation;
+                return function(done, error) {
+                    if (!current()) return;
+                    oncomplete = done;
+                    onerror = error;
+                    delivered = false;
+                    batches = 0;
+                    var called = false;
+                    return continuation.call(this, function(data) {
+                        if (called) return;
+                        called = true;
+                        accept(data, request);
+                    }, fail);
+                };
+            };
+            wrapped._myshowsWatched = true;
+            Lampa.Api[method] = wrapped;
+        });
+    }
     function channelSupported() {
         return window.AndroidJS && typeof window.AndroidJS.publishPluginChannel === "function" && typeof window.AndroidJS.clearPluginChannel === "function";
     }
@@ -106,6 +491,7 @@
     }
     function invalidateAndroidChannel(notify) {
         _channelGeneration++;
+        invalidateWatched();
         _channelShows = null;
         clearAndroidChannel(notify);
     }
@@ -924,11 +1310,13 @@
     }
     function setProfileSetting(key, value, sync) {
         value = storableValue(value);
+        var watchedTokenChanged = key === "myshows_token" && value !== getProfileSetting(key, "");
         if (key === "myshows_token" && value !== getProfileSetting(key, "") && getProfileSetting(key, "")) {
             setProfileSetting("myshows_relevance_history", {}, false);
             invalidateAndroidChannel(!value);
         }
         Lampa.Storage.set(getProfileKey(key), value);
+        if (watchedTokenChanged) watchedRefresh();
         if (sync !== false && !_syncApplying && window.__NMSync) window.__NMSync.patch("myshows", getProfileKey(key), value);
     }
     var MYSHOWS_SENSITIVE_KEYS = [ "myshows_login", "myshows_password", "myshows_token" ];
@@ -946,7 +1334,10 @@
         if (getProfileKey(base) === profileKey) {
             Lampa.Storage.set(base, value, true);
             if (base === "myshows_badge_style") applyBadgeStyleAttr();
-            if (tokenChanged) invalidateAndroidChannel(!value);
+            if (tokenChanged) {
+                invalidateAndroidChannel(!value);
+                watchedRefresh();
+            }
         }
         _syncApplying = false;
     }
@@ -1131,6 +1522,22 @@
         loadProfileSettings();
         autoSetupToken();
         var tokenValue = getProfileSetting("myshows_token", "");
+        Lampa.SettingsApi.addParam({
+            component: "myshows",
+            param: {
+                name: "myshows_hide_watched",
+                type: "trigger",
+                default: getProfileSetting("myshows_hide_watched", false)
+            },
+            field: {
+                name: "Скрывать просмотренное",
+                description: "Убирать полностью просмотренное в MyShows из обычных каталогов CUB/TMDB. Поиск и личные списки сохраняются."
+            },
+            onChange: function(value) {
+                setProfileSetting("myshows_hide_watched", value, false);
+                watchedRefresh();
+            }
+        });
         Lampa.SettingsApi.addParam({
             component: "myshows",
             param: {
@@ -1809,6 +2216,7 @@
                     };
                     npSetStatus(showId, cardData.id, "tv", tvMap[status] || "remove");
                     setCardStatusCache(cardData.id, false, status === "finished" ? "watching" : status);
+                    if (watchedEnabled()) watchedRefresh();
                 }
                 callback(success);
             });
@@ -1994,6 +2402,7 @@
                     };
                     npSetStatus(movieId, movieData.id, "movie", movieMap[status] || "remove");
                     setCardStatusCache(movieData.id, true, status);
+                    if (watchedEnabled()) watchedRefresh();
                 }
                 callback(success);
             });
@@ -3555,6 +3964,7 @@
     }
     function applyEpisodeMarkLocally(card, episodeId, watched, channelRequest) {
         if (!channelContextCurrent(channelRequest)) return;
+        if (watchedEnabled()) watchedRefresh();
         function recordHistory(id) {
             if (!id) return;
             var historyMap = relevanceHistory();
@@ -7058,6 +7468,7 @@
         addMyShowsToTMDB();
         addMyShowsToCUB();
         patchActivityForMyShows();
+        patchWatchedDiscovery();
         checkLampacEnvironment(function(isLampac) {
             IS_LAMPAC = isLampac;
             if (IS_LAMPAC) Log.info("✅ Среда: Lampac");
