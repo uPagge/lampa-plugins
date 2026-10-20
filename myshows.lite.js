@@ -156,9 +156,19 @@
             Lampa.Noty.show("MyShows: не удалось проверить просмотренное. Карточки остаются видимыми.");
         }
     }
-    function watchedIndex(reset, callback) {
+    function watchedIndex(reset, callback, loadingActivity) {
         var index = _watchedIndex;
         if (index && (!channelContextCurrent(index.context) || reset && index.ready)) {
+            if (index.mode === "mark") {
+                var archived = _watchedActivities.filter(function(object) {
+                    return object !== loadingActivity && (!loadingActivity || object.activity !== loadingActivity.activity);
+                });
+                if (archived.length) setTimeout(function() {
+                    archived.forEach(function(object) {
+                        if (object.activity && typeof object.activity.refresh === "function") object.activity.refresh();
+                    });
+                }, 0);
+            }
             invalidateWatched();
             index = null;
         }
@@ -584,7 +594,7 @@
                         accept(data, request);
                     });
                     received = [];
-                });
+                }, activity);
                 continuation = original.call(owner, request, function(data) {
                     if (initialCalled) return;
                     initialCalled = true;
