@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.0.13';
+    var VERSION = '1.0.14';
 
     // Registry migrations may leave a second copy in the current load queue.
     if (window.__myshowsPluginStarted) return;
@@ -1468,6 +1468,12 @@
     }
 
     function loadProfileSettings() {
+        // Native Storage treats an unset boolean false fallback as ''. Persist
+        // explicit local defaults before SettingsApi registers trigger labels.
+        ['myshows_hide_watched', 'myshows_android_tv'].forEach(function(key) {
+            if (!hasProfileSetting(key)) setProfileSetting(key, false, false);
+        });
+
         if (!hasProfileSetting('myshows_view_in_main')) {
             setProfileSetting('myshows_view_in_main', true, false);
         }
@@ -1531,6 +1537,9 @@
             setProfileSetting('myshows_badge_style', '1', false);
         }
 
+        // These unscoped values are native settings UI mirrors, not sync keys.
+        Lampa.Storage.set('myshows_hide_watched', storableValue(getProfileSetting('myshows_hide_watched', false)), true);
+        Lampa.Storage.set('myshows_android_tv',   storableValue(getProfileSetting('myshows_android_tv', false)), true);
         Lampa.Storage.set('myshows_view_in_main',  storableValue(getProfileSetting('myshows_view_in_main',  true)), true);
         Lampa.Storage.set('myshows_button_view',   storableValue(getProfileSetting('myshows_button_view',   true)), true);
         Lampa.Storage.set('myshows_sort_order',    getProfileSetting('myshows_sort_order',    'progress'), true);

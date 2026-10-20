@@ -67,8 +67,22 @@ function launch(options = {}) {
         data.set('myshows_use_np_profile_a','true');
         data.set('base_url_numparser','https://np.invalid');
         data.set('numparser_api_key','test-np-token');}
-    if (options.sync) context.__NMSync = {patch(){}, register(name, keys, apply) {context.applySync = apply;}};
+    if (options.sync) context.__NMSync = {patch(...args){(context.syncPatches ||= []).push(args);},
+        register(name, keys, apply) {context.applySync = apply;context.syncKeys = keys;}};
     context.window = context;
+    if (options.nativeSettings) {
+        // Real Storage/Params/SettingsApi functions are extracted unchanged from
+        // the supplied framework snapshot, not reimplemented in a test helper.
+        for(const [key,value] of data) {
+            if(value === undefined) data.delete(key);
+            else data.set(key,typeof value==='object'?JSON.stringify(value):String(value));
+        }
+        context.localStorage={getItem:key=>data.has(key)?data.get(key):null,
+            setItem:(key,value)=>data.set(key,String(value)),removeItem:key=>data.delete(key)};
+        vm.runInNewContext(fs.readFileSync(path.join(__dirname,'fixtures/lampa-settings-contract.js'),'utf8'),context);
+        Lampa.Storage=context.__nativeSettingsContract.Storage;
+        Lampa.SettingsApi.addParam=p=>{params.push(p);context.__nativeSettingsContract.addParam(p);};
+    }
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', options.variant || process.env.MYSHOWS_VARIANT || 'myshows.full.js'), 'utf8'), context);
     const run = delay => {const i = timers.findIndex(t => t.delay === delay);
         assert.notEqual(i, -1, 'expected lifecycle timer ' + delay); timers.splice(i,1)[0].fn();};
@@ -80,7 +94,16 @@ function launch(options = {}) {
     const answerUrl = (text, response) => {const i = requests.findIndex(r => r.url.includes(text));
         assert.notEqual(i,-1,'requested URL ' + text); requests.splice(i,1)[0].success(response);};
     const emit = (name, data) => (handlers[name] || []).forEach(fn => fn(data));
-    return {context, data, calls, requests, timers, run, setting, params, answer, answerUrl, changeProfile, notices, emit,
+    function settingElement(key) {
+        const registered=setting(key),events={};
+        const elem={label:'',data(name){return {name:key,type:'toggle',onChange:registered.onChange}[name];},
+            attr(){},find(){return {text(value){elem.label=value;}};},
+            on(name,fn){events[name]=fn;return elem;},each(fn){fn.call(elem);return elem;},eq(){return elem;}};
+        elem.enter=()=>events['hover:enter']({target:elem});return elem;
+    }
+    const settingLabel=key=>{const elem=settingElement(key);context.__nativeSettingsContract.update(elem);return elem.label;};
+    const toggleSetting=key=>{const elem=settingElement(key);context.__nativeSettingsContract.bind(elem);elem.enter();return elem.label;};
+    return {context, data, calls, requests, timers, run, setting, params, answer, answerUrl, changeProfile, notices, emit,settingLabel,toggleSetting,
         setActive(value) { active = value; }};
 }
 
@@ -91,6 +114,46 @@ const cards = [
     {id: 1, name: 'Alpha', original_name: 'Alpha', poster_path: '/a.jpg', myshowsId: 10,
         remaining: 1, watched_count: 1, total_count: 4}
 ];
+
+const localTriggers=['myshows_hide_watched','myshows_android_tv'];
+test('fresh profile renders both native trigger labels as Нет without syncing local preferences',()=>{
+    const app=launch({nativeSettings:true,sync:true,storage:{myshows_android_tv_profile_a:undefined}});app.run(2000);
+    for(const key of localTriggers) {
+        assert.equal(app.settingLabel(key),'Нет',key+' has a visible native default');
+        assert.equal(app.context.Lampa.Storage.get(key+'_profile_a'),false);
+        assert.equal(app.context.syncKeys.includes(key),false,'local trigger not registered for synchronization');
+    }
+});
+test('native string toggles and cold restart preserve Да and Нет for both local triggers',()=>{
+    const app=launch({nativeSettings:true,sync:true,storage:{myshows_android_tv_profile_a:undefined}});app.run(2000);
+    for(const key of localTriggers) {
+        assert.equal(app.toggleSetting(key),'Да');
+        assert.equal(app.context.Lampa.Storage.get(key+'_profile_a'),true);
+        assert.equal((app.context.syncPatches || []).some(args=>args[1]===key+'_profile_a'),false);
+    }
+    const restart=launch({nativeSettings:true,storage:Object.fromEntries(app.data)});restart.run(2000);
+    for(const key of localTriggers) {
+        assert.equal(restart.settingLabel(key),'Да','restart uses stored profile preference');
+        assert.equal(restart.toggleSetting(key),'Нет');
+        assert.equal(restart.context.Lampa.Storage.get(key+'_profile_a'),false);
+    }
+});
+test('native profile switch mirrors independent trigger labels and preserves existing string and boolean preferences',()=>{
+    const app=launch({nativeSettings:true,storage:{
+        myshows_hide_watched:'true',myshows_android_tv:'true',
+        myshows_hide_watched_profile_a:true,myshows_android_tv_profile_a:'true',
+        myshows_hide_watched_profile_b:'false',myshows_android_tv_profile_b:false,
+        myshows_token_profile_b:'other',myshows_calendar_profile_b:'false'}});app.run(2000);
+    for(const key of localTriggers)assert.equal(app.settingLabel(key),'Да');
+    app.changeProfile('b');
+    for(const key of localTriggers)assert.equal(app.settingLabel(key),'Нет');
+    assert.equal(app.toggleSetting('myshows_android_tv'),'Да');
+    app.changeProfile('a');
+    for(const key of localTriggers)assert.equal(app.settingLabel(key),'Да');
+    app.changeProfile('b');
+    assert.equal(app.settingLabel('myshows_hide_watched'),'Нет');
+    assert.equal(app.settingLabel('myshows_android_tv'),'Да');
+});
 
 test('startup uses sorted copies and excludes authentication/unrelated data', () => {
     const app = launch({cards}); app.run(50);
