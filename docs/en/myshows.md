@@ -63,7 +63,9 @@ activities. Filtering never changes MyShows marks.
 
 MyShows IDs are never treated as TMDB IDs. Without a verified mapping, matching
 requires a unique media type, literal title and exact year. Unknown or ambiguous
-cards stay visible. Hidden pages are drained until visible cards or real source
+cards stay visible. Conflicting explicit original titles keep the card visible
+even when localized titles and years match. Hidden pages are drained until
+visible cards or real source
 exhaustion; Top 100 is not extended beyond its original hundred. Disabling the
 switch restores the original cards and order.
 

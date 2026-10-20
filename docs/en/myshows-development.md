@@ -40,7 +40,9 @@ are not replaced or exported for testing. Fixtures contain neutral test data.
 an NMSync setting. `Api.main/category/list` wrappers accept only known CUB/TMDB
 discovery requests/rows. The original request's query (including an empty query)
 and source/path determine scope. Personal, search, calendar and custom rows are
-preserved. Shared source responses, row objects and result arrays are never
+preserved. Verified built-in CUB `collections/<numeric-id>` rows and their More
+lists are included. Shared source responses, row objects and result arrays are
+never
 modified. The native grid's owned `request.page` is advanced to the last consumed
 source page before delivery because native Pagination ignores `response.page`
 and increments its own request cursor. All other request fields stay unchanged.
@@ -48,7 +50,9 @@ and increments its own request cursor. All other request fields stay unchanged.
 Two authenticated reads initialize a separate in-memory index:
 `profile.WatchedMovies` and `profile.Shows`. It never imports the existing
 `myshowsWatched`/badge caches or fuzzy TMDB mapping guesses. A unique literal
-title + exact year + media type match is required. For a candidate show with
+title + exact year + media type match is required. Two conflicting explicit
+original titles veto a localized-title match; a missing original still permits
+the unique title/year fallback. For a show with
 `watching`/`finished` status, `shows.GetById({showId,withEpisodes:true})` and
 `profile.Episodes({showId})` must prove every released episode watched, with at
 least one released episode. Invalid/missing dates or IDs fail open. Calendar-valid
@@ -59,7 +63,11 @@ Repeated cards coalesce by MyShows show ID. Details are cached for the current
 catalogue index, not persisted. A new main/category invocation or list page 1
 reconfirms the index. Profile/token changes and successful mutations invalidate
 proofs; pending replies retain profile, token and generation guards including
-profile ABA. Native activity identity and request fields prevent stale cursor
+profile ABA. The request's assigned native activity handle binds the target
+even while Activity.push is still creating it before updating the active stack.
+Synchronous completion/error callbacks defer once until that push finishes;
+later navigation or a replaced handle cannot revive them. Activity/request
+fields prevent stale cursor
 writes/repaints after navigation. Recent native catalogue activities are refreshed
 through their own activity handles, including archived pages after playback.
 No refresh is triggered by index completion, avoiding a refresh/load cycle.

@@ -215,6 +215,10 @@
             var item = type === 'tv' ? entry && entry.show : entry;
             if (!item || !item.id || watchedYear(item.year) !== year) return;
             var title = watchedTitle(item.title), original = watchedTitle(item.titleOriginal);
+            var cardOriginal = watchedTitle(type === 'movie' ? card.original_title : card.original_name);
+            // A translated homonym cannot override two contradictory explicit
+            // originals. Missing originals may still use the unique local title.
+            if (cardOriginal && original && cardOriginal !== original) return;
             if (!names.some(function(name) { return name && (name === title || name === original); })) return;
             if (!matches[item.id]) { matches[item.id] = true; found.push({type: type, item: item, status: entry.watchStatus}); }
         });
@@ -291,7 +295,7 @@
     function watchedUrl(url, source) {
         if (typeof url !== 'string') return false;
         if (source === 'tmdb') return /^(?:(?:movie|tv)\/(?:popular|top_rated|now_playing|upcoming|airing_today|on_the_air)|discover\/(?:movie|tv)|trending\/(?:movie|tv|all)\/(?:day|week)|(?:movie|tv)\/\d+\/(?:recommendations|similar)|collection\/\d+)(?:$|\?)/.test(url);
-        if (source === 'cub') return /^top\/(?:hundred|fire)\/(?:movie|tv)(?:$|\?)/.test(url) ||
+        if (source === 'cub') return /^(?:top\/(?:hundred|fire)\/(?:movie|tv)|collections\/\d+)(?:$|\?)/.test(url) ||
             /^\?(?=[^#]*\bsort=)(?![^#]*\bquery=)/.test(url);
         return false;
     }
@@ -346,7 +350,11 @@
             if (typeof original !== 'function' || original._myshowsWatched) return;
             var wrapped = function(request, oncomplete, onerror) {
                 if (!watchedEnabled() || !watchedRequest(request, method)) return original.apply(this, arguments);
-                var owner = this, activity = Lampa.Activity.active(), context = channelContext();
+                // Native Activity.push creates the component before putting its
+                // object on the active stack. Bind to its already assigned handle,
+                // never to the previous screen observed during component creation.
+                var owner = this, activity = request.activity ? request : Lampa.Activity.active(), context = channelContext();
+                var activityHandle = activity && activity.activity;
                 if (activity && _watchedActivities.indexOf(activity) < 0) {
                     _watchedActivities.push(activity);
                     if (_watchedActivities.length > 8) _watchedActivities.shift();
@@ -354,11 +362,29 @@
                 var sourceUrl = request.url, sourceName = request.source, sourcePage = request.page, sourceQuery = request.query;
                 var continuation, sourceReturned = false, index, delivered = false;
                 var seen = {}, batches = 0;
-                function current() {
-                    return channelContextCurrent(context) && watchedCurrent(index) && Lampa.Activity.active() === activity &&
-                        request.url === sourceUrl && request.source === sourceName && request.page === sourcePage && request.query === sourceQuery;
+                function activityCurrent() {
+                    var active = Lampa.Activity.active();
+                    return activityHandle ? activity.activity === activityHandle && active && active.activity === activityHandle :
+                        active === activity;
                 }
-                function fail() { if (current() && !delivered) { delivered = true; if (onerror) onerror.apply(this, arguments); } }
+                function requestCurrent() {
+                    return request.url === sourceUrl && request.source === sourceName &&
+                        request.page === sourcePage && request.query === sourceQuery;
+                }
+                function current() {
+                    return channelContextCurrent(context) && watchedCurrent(index) && activityCurrent() && requestCurrent();
+                }
+                function fail() {
+                    var receiver = this, args = arguments;
+                    function deliverError() {
+                        if (channelContextCurrent(context) && activityCurrent() && requestCurrent() && watchedEnabled() &&
+                            (!index || watchedCurrent(index)) && !delivered) {
+                            delivered = true; if (onerror) onerror.apply(receiver, args);
+                        }
+                    }
+                    if (activityHandle && !activityCurrent()) setTimeout(deliverError, 0);
+                    else deliverError();
+                }
                 function loadList(nextRequest) {
                     var called = false;
                     return original.call(owner, nextRequest, function(data) {
@@ -383,7 +409,14 @@
                         oncomplete(data);
                     }
                 }
-                function accept(data, sourceRequest) {
+                function accept(data, sourceRequest, deferred) {
+                    // Even fully synchronous boundary/cache callbacks run after
+                    // native create-before-push finishes. A navigation away only
+                    // gets one deferred check and can never revive this result.
+                    if (activityHandle && !activityCurrent() && !deferred) {
+                        setTimeout(function() { accept(data, sourceRequest, true); }, 0);
+                        return;
+                    }
                     if (!current() || delivered) return;
                     watchedPayload(data, request, index, function(filtered) {
                         if (!current() || delivered) return;
@@ -417,12 +450,7 @@
                     if (initialCalled) return;
                     initialCalled = true;
                     if (ready) accept(data, request); else if (!received.length) received.push(data);
-                }, function() {
-                    // An index may still be loading when the source fails.
-                    if (channelContextCurrent(context) && Lampa.Activity.active() === activity && !delivered) {
-                        delivered = true; if (onerror) onerror.apply(this, arguments);
-                    }
-                });
+                }, fail);
                 sourceReturned = true;
                 if (typeof continuation !== 'function') return continuation;
                 return function(done, error) {
