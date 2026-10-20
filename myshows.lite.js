@@ -2119,15 +2119,22 @@
             }
         });
     }
-    function getMovieIdByOriginalTitle(title, year, callback) {
+    function getMovieIdByOriginalTitle(title, year, callback, searchQuery) {
         makeMyShowsJSONRPCRequest("movies.GetCatalog", {
             search: {
-                query: title,
+                query: searchQuery || title,
                 year: parseInt(year)
             }
         }, function(success, data) {
             if (success && data && data.result) {
-                getMovieCandidates(data.result, title, year, function(candidates) {
+                var results = data.result;
+                if (searchQuery) {
+                    var expected = cleanTitle(title).toLowerCase();
+                    results = results.filter(function(item) {
+                        return item.movie && cleanTitle(item.movie.titleOriginal).toLowerCase() === expected;
+                    });
+                }
+                getMovieCandidates(results, title, year, function(candidates) {
                     if (candidates) {
                         callback(candidates);
                         return;
@@ -2381,6 +2388,14 @@
         var title = movieData.original_title || movieData.title;
         var year = getMovieYear(movieData);
         getMovieIdByOriginalTitle(title, year, function(movieId) {
+            if (movieId || !movieData.title || movieData.title === title) {
+                setStatus(movieId);
+                return;
+            }
+            Log.info("Movie not found by original title, trying localized:", movieData.title);
+            getMovieIdByOriginalTitle(title, year, setStatus, movieData.title);
+        });
+        function setStatus(movieId) {
             if (!movieId) {
                 callback(false);
                 return;
@@ -2406,7 +2421,7 @@
                 }
                 callback(success);
             });
-        });
+        }
     }
     function getShowIdByImdbId(id, expectedTitle, expectedYear, alternativeTitles, callback) {
         if (!id) {

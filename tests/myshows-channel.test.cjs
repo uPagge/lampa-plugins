@@ -487,6 +487,26 @@ test('successful show-status update refreshes discovery, failed update preserves
     app.answer('shows.GetByExternalId',{result:showSummary.show});
     app.answer('manage.SetShowStatus',{result:true});assert.equal(refreshes,1);
 });
+test('localized movie lookup fallback preserves original-title identity for Japanese names',()=>{
+    const app=launch();let success;
+    const card={id:501,title:'Локальное название',original_title:'日本語の映画',release_date:'2020-01-01'};
+    app.context.MyShows.setStatus(card,'remove',true,v=>success=v);
+    assert.equal(app.requests.find(r=>r.body?.method==='movies.GetCatalog').body.params.search.query,'日本語の映画');
+    app.answer('movies.GetCatalog',{result:[]});
+    assert.equal(app.requests.find(r=>r.body?.method==='movies.GetCatalog')?.body.params.search.query,'Локальное название');
+    app.answer('movies.GetCatalog',{result:[
+        {movie:{id:601,title:'Локальное название',titleOriginal:'Другой фильм',year:2020}},
+        {movie:{id:602,title:'Локальное название',titleOriginal:'日本語の映画',year:2020}}]});
+    assert.equal(app.requests.find(r=>r.body?.method==='manage.SetMovieStatus').body.params.movieId,602);
+    app.answer('manage.SetMovieStatus',{result:true});assert.equal(success,true);
+});
+test('localized fallback never assigns status to a different non-Latin original',()=>{
+    const app=launch();let success;
+    app.context.MyShows.setStatus({id:501,title:'Локальное название',original_title:'日本語の映画',release_date:'2020-01-01'},'remove',true,v=>success=v);
+    app.answer('movies.GetCatalog',{result:[]});
+    app.answer('movies.GetCatalog',{result:[{movie:{id:601,title:'Локальное название',titleOriginal:'Другой фильм',year:2020}}]});
+    assert.equal(success,false);assert.equal(app.requests.filter(r=>r.body?.method==='manage.SetMovieStatus').length,0);
+});
 test('series hides only after all released episode ids are confirmed in full history',()=>{
     const app=discovery({pages:[{results:[tvCard,unseenCard]}]});let output;
     app.context.Lampa.Api.list({...topRequest,url:'top/hundred/tv'},v=>output=v,assert.fail);
