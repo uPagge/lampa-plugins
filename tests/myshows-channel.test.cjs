@@ -1096,7 +1096,7 @@ test('other modes do not fetch viewing history', () => {
 
 test('relevance error preserves persisted watch date and successful empty clears it', () => {
     const app=launch({cards:cards,storage:{myshows_sort_order_profile_a:'relevance',
-        myshows_relevance_history_profile_a:{20:{watch:1578096000000,checked:1}}}});
+        myshows_relevance_history_profile_a:{20:{watch:1578096000000,dateParser:2,checked:1}}}});
     app.run(50);
     answerHistory(app,10,history('2020-01-02'));
     answerHistory(app,20,{error:{code:500}});
@@ -1149,8 +1149,8 @@ test('relevance uses newest released episode when the last metadata episode is f
 
 test('relevance NP cards without dates retain persisted release and viewing dates', () => {
     const app=launch({np:true,storage:{myshows_sort_order_profile_a:'relevance',
-        myshows_relevance_history_profile_a:{10:{watch:1578096000000,checked:Date.now()},
-            20:{release:1578009600000,checked:Date.now()}}}});
+        myshows_relevance_history_profile_a:{10:{watch:1578096000000,dateParser:2,checked:Date.now()},
+            20:{release:1578009600000,dateParser:2,checked:Date.now()}}}});
     app.run(50); app.answerUrl('/myshows/watching?',{results:[cards[0],cards[1]]});
     assert.deepEqual(app.calls.at(-1).publish.items.map(c=>c.id),['1','2']);
     assert.equal(app.requests.filter(r=>r.body?.method==='profile.Episodes').length,0);
@@ -1162,7 +1162,7 @@ test('relevance startup loads history even without an Android bridge', () => {
 });
 
 test('logout clears private viewing dates before another MyShows account uses the profile', () => {
-    const app=launch({cards,storage:{myshows_relevance_history_profile_a:{10:{watch:1578096000000,checked:Date.now()}}}});
+    const app=launch({cards,storage:{myshows_relevance_history_profile_a:{10:{watch:1578096000000,dateParser:2,checked:Date.now()}}}});
     app.run(2000); app.params.find(p=>p.field.name==='Выйти из MyShows').onChange();
     assert.deepEqual(Object.keys(app.data.get('myshows_relevance_history_profile_a')),[]);
 });
@@ -1188,8 +1188,8 @@ test('ordinary NP list callback still completes when MyShows has no token', () =
 });
 test('NP id-only episode arrays do not erase a known release date', () => {
     const app=launch({np:true,storage:{myshows_sort_order_profile_a:'relevance',
-        myshows_relevance_history_profile_a:{10:{release:1578009600000,checked:Date.now()},
-            20:{release:1578096000000,checked:Date.now()}}}});
+        myshows_relevance_history_profile_a:{10:{release:1578009600000,dateParser:2,checked:Date.now()},
+            20:{release:1578096000000,dateParser:2,checked:Date.now()}}}});
     app.run(50); app.answerUrl('/myshows/watching?',{results:[
         {...cards[0],unwatched_episodes:[201]},{...cards[1],unwatched_episodes:[101]}]});
     assert.deepEqual(app.calls.at(-1).publish.items.map(c=>c.id),['2','1']);
@@ -1226,7 +1226,7 @@ test('DOM cards with older metadata follow the fresh relevance channel order', (
     const fresh=[{id:1,name:'Alpha',myshowsId:10,last_episode_to_myshows:{air_date:'2020-01-04'}},
         {id:2,name:'Bravo',myshowsId:20,last_episode_to_myshows:{air_date:'2020-01-03'}}];
     const app=launch({cards:fresh,storage:{myshows_sort_order_profile_a:'relevance',
-        myshows_relevance_history_profile_a:{10:{checked:Date.now()},20:{checked:Date.now()}}}});
+        myshows_relevance_history_profile_a:{10:{dateParser:2,checked:Date.now()},20:{dateParser:2,checked:Date.now()}}}});
     const elements=fresh.map(c=>({card_data:JSON.parse(JSON.stringify(c)),classList:{contains:()=>true}}));
     elements[0].card_data.last_episode_to_myshows.air_date='2020-01-01';
     const order=[],container={children:elements,appendChild:e=>order.push(e.card_data.id)};
@@ -1318,7 +1318,7 @@ test('relevance cached release metadata sorts before the one fast callback',()=>
     const app=launch({bridge:'missing',cards:[{id:1,myshowsId:1,name:'Alpha'},
         {id:2,myshowsId:2,name:'Zulu',last_episode_to_myshows:{air_date:'2020-01-01'}}],
         storage:{myshows_sort_order_profile_a:'relevance',myshows_relevance_history_profile_a:{
-            1:{checked:Date.now()},2:{checked:Date.now()}}}});
+            1:{dateParser:2,checked:Date.now()},2:{dateParser:2,checked:Date.now()}}}});
     let count=0, ids;
     app.context.MyShows.getUnwatchedShowsWithDetails(result=>{count++;ids=Array.from(result.shows,c=>c.id);});
     assert.equal(count,1);assert.deepEqual(ids,[2,1]);
@@ -1353,7 +1353,7 @@ test('NP unwatched More relevance uses complete normalized shows and history bef
 });
 
 test('unchanged or failed relevance scores retain initial native row without redundant refresh',()=>{
-    const app=relevanceHome({storage:{myshows_relevance_history_profile_a:{21:{watch:1,checked:1}}}});
+    const app=relevanceHome({storage:{myshows_relevance_history_profile_a:{21:{watch:1,dateParser:2,checked:1}}}});
     for(let id=1;id<=21;id++) answerHistory(app,id,id===21?{error:{code:500}}:history(null));
     assert.equal(app.timers.filter(t=>t.delay===400).length,0);
     assert.equal(app.line().items.length,7);
@@ -1376,4 +1376,29 @@ test('MyShows full landing rebuild slices the authoritative relevance first20',(
     load();assert.ok(built);assert.equal(built[0].results.length,20);assert.notEqual(built[0].results[0].id,21);
     for(let id=1;id<=21;id++)answerHistory(app,id,history(id===21?'2026-10-20T12:00:00Z':null));
     assert.equal(app.context.refreshes,1);load();assert.equal(built[0].results[0].id,21);
+});
+
+test('live-shape compact offset viewing dates invalidate old zero cache without clearing known dates',()=>{
+    const app=launch({bridge:'missing',cards,storage:{myshows_sort_order_profile_a:'relevance',
+        myshows_relevance_history_profile_a:{10:{watch:0,checked:Date.now()},20:{watch:1,release:2,version:3,checked:Date.now()}}}});
+    let result;app.context.MyShows.getUnwatchedShowsWithDetails(value=>result=value);
+    assert.equal(app.requests.filter(r=>r.body?.method==='profile.Episodes').length,2,'old successful zero cannot suppress new parser');
+    assert.equal(app.data.get('myshows_relevance_history_profile_a')[20].watch,1);
+    answerHistory(app,10,history('2026-10-19T23:37:57+0300'));
+    answerHistory(app,20,{error:{code:500}});
+    assert.equal(result.shows[0].id,1);
+    const map=app.data.get('myshows_relevance_history_profile_a');
+    assert.equal(map[10].watch,Date.parse('2026-10-19T23:37:57+03:00'));
+    assert.equal(map[20].watch,1);assert.equal(map[20].release,2);assert.equal(map[20].version,3);
+    app.context.MyShows.getUnwatchedShowsWithDetails(()=>{});
+    assert.equal(app.requests.filter(r=>r.body?.method==='profile.Episodes').length,0,'new schema cache and error retry remain bounded');
+});
+for(const value of ['2020-01-01T24:00:00+0300','2020-01-01T12:60:00+0300',
+    '2020-01-01T12:00:60+0300','2020-01-01T12:00:00+2460',
+    '2020-01-01T12:00:00+2360','2020-01-01T12:00:00+2400','2020-01-01T24:00:00+03:00',
+    '2020-02-30T12:00:00+0300','2999-01-01T12:00:00+0300',
+    '19.10.2026','2026-10-19T23:37:57'])test('relevance rejects damaged or ambiguous date '+value,()=>{
+    const app=launch({bridge:'missing',cards:[cards[0]],storage:{myshows_sort_order_profile_a:'relevance'}});
+    app.context.MyShows.getUnwatchedShowsWithDetails(()=>{});answerHistory(app,20,history(value));
+    assert.equal(app.data.get('myshows_relevance_history_profile_a')[20].watch,0);
 });
