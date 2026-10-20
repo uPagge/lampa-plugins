@@ -37,7 +37,25 @@ are not replaced or exported for testing. Fixtures contain neutral test data.
 ## Watched discovery contract
 
 `myshows_hide_watched` is device-local and profile-local, default off; it is not
-an NMSync setting. `Api.main/category/list` wrappers accept only known CUB/TMDB
+an NMSync setting. Both opt-in triggers (`myshows_hide_watched` and
+`myshows_android_tv`) initialize absent profile keys explicitly to `false` via
+the existing string-safe profile setter. `loadProfileSettings` mirrors both into
+the unscoped native UI keys with `storableValue`, including on profile changes.
+Those mirrors are settings UI state only and are not NMSync keys. This avoids
+native Storage converting an unset false fallback to an empty string and Params
+displaying `undefined`; normal defaults display Нет and enabled values display Да.
+Native toggle callbacks supply the strings `true`/`false`, which the existing
+handlers preserve locally.
+
+`tests/fixtures/lampa-settings-contract.js` contains ten unchanged function
+extracts from the supplied real client: Storage get/set, Params registration,
+binding/value rendering and SettingsApi registration. Its header records the
+snapshot SHA-256. The suite executes those functions with the complete plugin,
+asserting the rendered Нет/Да text for fresh defaults, actual native toggles,
+cold restart and profile changes. Environment dependencies/DOM translation are
+boundary doubles; the Storage fallback and Params label logic are not mirrored.
+
+`Api.main/category/list` wrappers accept only known CUB/TMDB
 discovery requests/rows. The original request's query (including an empty query)
 and source/path determine scope. Personal, search, calendar and custom rows are
 preserved. Verified built-in CUB `collections/<numeric-id>` rows and their More
