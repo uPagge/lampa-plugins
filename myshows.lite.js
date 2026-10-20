@@ -343,7 +343,7 @@
         return false;
     }
     function watchedRequest(request, method) {
-        if (!request || request.query !== undefined && request.query !== null || /search|favorite|history|continue|myshows|calendar|person|episode|season/.test(request.url || "")) return false;
+        if (!request || request.query !== undefined && request.query !== null && request.query !== "" || /search|favorite|history|continue|myshows|calendar|person|episode|season/.test(request.url || "")) return false;
         if (method === "recomend") return request.component === "recomend" && /^(movie|tv)$/.test(request.media || "");
         var source = request.source || Lampa.Storage.field("source");
         if (source !== "cub" && source !== "tmdb") return false;
@@ -623,7 +623,13 @@
                         watchedPayload(row, request, index, done);
                         return;
                     }
-                    refillPage(row, params, producer, receiver, done, function() {
+                    refillPage(row, params, producer, receiver, function(result) {
+                        if (result.page !== row.page) {
+                            result = watchedCopy(result);
+                            result.page = row.page;
+                        }
+                        done(result);
+                    }, function() {
                         Lampa.Noty.show("MyShows: не удалось добрать карточки. Повторите загрузку каталога.");
                         watchedPayload(row, request, index, done);
                     }, sample);
