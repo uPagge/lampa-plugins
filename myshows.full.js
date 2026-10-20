@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.0.14';
+    var VERSION = '1.0.15';
 
     // Registry migrations may leave a second copy in the current load queue.
     if (window.__myshowsPluginStarted) return;
@@ -121,15 +121,72 @@
     var _watchedIndex = null;
     var _watchedEpoch = 0;
     var _watchedActivities = [];
+    var _watchedRecommendationProvenance = {};
+
+    function watchedActivityKind(activity) {
+        return activity.component === 'main' ? 'main' : activity.component === 'category' ? 'category' :
+            activity.component === 'recomend' ? 'recomend' : 'list';
+    }
+
+    function watchedMode() {
+        if (!hasProfileSetting('myshows_watched_mode')) {
+            var legacy = getProfileSetting('myshows_hide_watched', false);
+            return legacy === true || legacy === 'true' ? 'hide' : 'show';
+        }
+        var mode = getProfileSetting('myshows_watched_mode', 'show');
+        return mode === 'hide' || mode === 'mark' ? mode : 'show';
+    }
 
     function watchedEnabled() {
-        var value = getProfileSetting('myshows_hide_watched', false);
-        return (value === true || value === 'true') && !!getProfileSetting('myshows_token', '');
+        return watchedMode() !== 'show' && !!getProfileSetting('myshows_token', '');
+    }
+
+    function clearWatchedDecoration(card) {
+        if (!card || !card.classList) return;
+        card.classList.remove('myshows-watched-card');
+        var badge = card.querySelector('.myshows-watched-check');
+        if (badge) badge.remove();
+    }
+
+    function clearWatchedMarks() {
+        var cards = document.querySelectorAll('.myshows-watched-card');
+        for (var i = 0; i < cards.length; i++) clearWatchedDecoration(cards[i]);
+    }
+
+    function drawWatchedMark(card, data) {
+        clearWatchedDecoration(card);
+        var marker = data && data._myshows_watched, active = Lampa.Activity.active();
+        if (watchedMode() !== 'mark' || !marker || !watchedCurrent(_watchedIndex) ||
+            marker.epoch !== _watchedEpoch || marker.generation !== _channelGeneration ||
+            marker.profile !== getProfileId() || !active ||
+            !watchedRequest(active, watchedActivityKind(active))) return;
+        var view = card.querySelector('.card__view');
+        if (!view) return;
+        card.classList.add('myshows-watched-card');
+        var badge = document.createElement('div');
+        badge.className = 'myshows-watched-check';
+        badge.textContent = '✓';
+        badge.setAttribute('title', 'Просмотрено в MyShows');
+        badge.setAttribute('aria-label', 'Просмотрено в MyShows');
+        view.appendChild(badge);
+    }
+
+    function watchedStyles() {
+        if (document.getElementById('myshows-watched-display-style')) return;
+        var style = document.createElement('style');
+        style.id = 'myshows-watched-display-style';
+        style.textContent = '.card.myshows-watched-card .card__img{filter:brightness(.42);transition:filter .15s}' +
+            '.card.myshows-watched-card.focus .card__img,.card.myshows-watched-card:focus .card__img{filter:none}' +
+            '.myshows-watched-check{position:absolute;top:.5em;right:.5em;background:rgba(0,0,0,.78);color:#fff;' +
+            'border-radius:50%;width:1.55em;height:1.55em;display:flex;align-items:center;justify-content:center;' +
+            'font-weight:bold;z-index:3;pointer-events:none}';
+        document.head.appendChild(style);
     }
 
     function invalidateWatched() {
         _watchedEpoch++;
         _watchedIndex = null;
+        clearWatchedMarks();
     }
 
     function watchedRefresh() {
@@ -142,15 +199,14 @@
                 if (object === active) refreshed = true;
             }
         });
-        if (!refreshed && active && /^(main|category|category_full)$/.test(active.component || '') &&
-            watchedRequest(active, active.component === 'main' ? 'main' :
-                active.component === 'category' ? 'category' : 'list') &&
+        if (!refreshed && active && /^(main|category|category_full|recomend)$/.test(active.component || '') &&
+            watchedRequest(active, watchedActivityKind(active)) &&
             typeof Lampa.Activity.refresh === 'function') Lampa.Activity.refresh();
     }
 
     function watchedCurrent(index) {
         return index && index === _watchedIndex && index.epoch === _watchedEpoch &&
-            channelContextCurrent(index.context) && watchedEnabled();
+            channelContextCurrent(index.context) && index.mode === watchedMode() && watchedEnabled();
     }
 
     function watchedError(index) {
@@ -171,7 +227,7 @@
             else index.callbacks.push(callback);
             return;
         }
-        index = {epoch: _watchedEpoch, context: channelContext(), callbacks: [callback],
+        index = {epoch: _watchedEpoch, mode: watchedMode(), context: channelContext(), callbacks: [callback],
             ready: false, movies: [], shows: [], details: {}, pending: {}, queue: [], active: 0};
         _watchedIndex = index;
         var remaining = 2;
@@ -303,6 +359,7 @@
     function watchedRequest(request, method) {
         if (!request || (request.query !== undefined && request.query !== null) ||
             /search|favorite|history|continue|myshows|calendar|person|episode|season/.test(request.url || '')) return false;
+        if (method === 'recomend') return request.component === 'recomend' && /^(movie|tv)$/.test(request.media || '');
         var source = request.source || Lampa.Storage.field('source');
         if (source !== 'cub' && source !== 'tmdb') return false;
         if (method === 'main') return !request.url;
@@ -322,31 +379,105 @@
             var rows = new Array(payload.length), left = payload.length;
             payload.forEach(function(row, i) {
                 var source = row && (row.source || request.source || Lampa.Storage.field('source'));
-                if (!row || row.query || !watchedUrl(row.url, source)) done(row, i);
+                if (!row || row.query || (!watchedUrl(row.url, source) &&
+                    row._myshows_recommendation !== _watchedRecommendationProvenance)) done(row, i);
                 else watchedPayload(row, request, index, function(result) { done(result, i); });
             });
             function done(row, i) {
                 rows[i] = row;
-                if (!--left) callback(rows.filter(function(item) { return !item || !item.results || item.results.length; }));
+                if (!--left) callback(index.mode === 'mark' ? rows : rows.filter(function(item) { return !item || !item.results || item.results.length; }));
             }
             return;
         }
         if (!payload || !Array.isArray(payload.results) || !payload.results.length) { callback(payload); return; }
-        var keep = new Array(payload.results.length), remaining = keep.length;
+        var keep = new Array(payload.results.length), marked = new Array(payload.results.length), remaining = keep.length;
         payload.results.forEach(function(card, i) {
             watchedCard(card, index, function(hide) {
                 keep[i] = !hide;
+                marked[i] = card;
+                if (index.mode === 'mark' && card && (hide || card._myshows_watched)) {
+                    marked[i] = watchedCopy(card);
+                    delete marked[i]._myshows_watched;
+                    if (hide) marked[i]._myshows_watched = {epoch: index.epoch,
+                        generation: index.context.generation, profile: index.context.profile};
+                }
                 if (--remaining) return;
                 var copy = watchedCopy(payload);
-                copy.results = payload.results.filter(function(item, position) { return keep[position]; });
+                copy.results = index.mode === 'mark' ? marked : payload.results.filter(function(item, position) { return keep[position]; });
                 callback(copy);
             });
         });
     }
 
+    function patchWatchedRecommendations() {
+        if (!Lampa.ContentRows || !Lampa.ContentRows.call || !Lampa.Recomends) return;
+        var original = Lampa.ContentRows.call;
+        if (original._myshowsWatched) return;
+        var found = false;
+        function wrapRow(row) {
+            var factory = row.call;
+            if (factory._myshowsWatched) return;
+            var call = function(params, screen) {
+                var result = factory.apply(this, arguments);
+                if (!watchedEnabled() || !watchedRequest(params, screen) || typeof result !== 'function') return result;
+                var context = channelContext(), mode = watchedMode();
+                return function(done) {
+                    var args = Array.prototype.slice.call(arguments);
+                    args[0] = function(payload) {
+                        var values = Array.prototype.slice.call(arguments);
+                        if (payload && channelContextCurrent(context) && watchedMode() === mode && watchedEnabled()) {
+                            values[0] = watchedCopy(payload);
+                            values[0]._myshows_recommendation = _watchedRecommendationProvenance;
+                        }
+                        return done.apply(this, values);
+                    };
+                    return result.apply(this, args);
+                };
+            };
+            call._myshowsWatched = true;
+            row.call = call;
+        }
+        var wrapped = function(screen, params, calls) {
+            if (found || !watchedEnabled() || !watchedRequest(params, screen) ||
+                (screen !== 'main' && screen !== 'category')) return original.apply(this, arguments);
+            // ContentRows has no registry getter. Observe its named native row
+            // once, restoring the prototype BEFORE native/user row iteration.
+            // The original factory, visibility, shuffle, index and More remain.
+            var each = Array.prototype.forEach;
+            Array.prototype.forEach = function() {
+                var registry = Array.isArray(this);
+                for (var j = 0; registry && j < this.length; j++) {
+                    if (!this[j] || typeof this[j].call !== 'function' || !this[j].screen) registry = false;
+                }
+                if (registry) {
+                    // Also restore before custom rows when the built-in is
+                    // disabled/absent. A later call may discover it when enabled.
+                    Array.prototype.forEach = each;
+                    for (var i = 0; i < this.length; i++) {
+                        var row = this[i];
+                        if (row.name === 'recomend_watch') {
+                            found = true;
+                            Lampa.ContentRows.call = original;
+                            wrapRow(row);
+                            break;
+                        }
+                    }
+                }
+                return each.apply(this, arguments);
+            };
+            try { return original.apply(this, arguments); }
+            finally { Array.prototype.forEach = each; }
+        };
+        wrapped._myshowsWatched = true;
+        Lampa.ContentRows.call = wrapped;
+    }
+
     function patchWatchedDiscovery() {
-        ['main', 'category', 'list'].forEach(function(method) {
-            var original = Lampa.Api[method];
+        var hooks = ['main', 'category', 'list'].map(function(method) { return {api: Lampa.Api, method: method, kind: method}; });
+        if (Lampa.Recomends && typeof Lampa.Recomends.page === 'function') hooks.push({api: Lampa.Recomends, method: 'page', kind: 'recomend'});
+        hooks.forEach(function(hook) {
+            var method = hook.kind, paginated = method === 'list' || method === 'recomend';
+            var original = hook.api[hook.method];
             if (typeof original !== 'function' || original._myshowsWatched) return;
             var wrapped = function(request, oncomplete, onerror) {
                 if (!watchedEnabled() || !watchedRequest(request, method)) return original.apply(this, arguments);
@@ -359,7 +490,8 @@
                     _watchedActivities.push(activity);
                     if (_watchedActivities.length > 8) _watchedActivities.shift();
                 }
-                var sourceUrl = request.url, sourceName = request.source, sourcePage = request.page, sourceQuery = request.query;
+                var sourceUrl = request.url, sourceName = request.source, sourcePage = request.page, sourceQuery = request.query,
+                    sourceMedia = request.media;
                 var continuation, sourceReturned = false, index, delivered = false;
                 var seen = {}, batches = 0;
                 function activityCurrent() {
@@ -369,7 +501,7 @@
                 }
                 function requestCurrent() {
                     return request.url === sourceUrl && request.source === sourceName &&
-                        request.page === sourcePage && request.query === sourceQuery;
+                        request.page === sourcePage && request.query === sourceQuery && request.media === sourceMedia;
                 }
                 function current() {
                     return channelContextCurrent(context) && watchedCurrent(index) && activityCurrent() && requestCurrent();
@@ -405,7 +537,7 @@
                         delivered = true;
                         // Native grid ignores response.page and increments the owned
                         // request cursor itself. Advance it past drained source pages.
-                        if (method === 'list' && data && +data.page > 0) request.page = sourcePage = +data.page;
+                        if (index.mode === 'hide' && paginated && data && +data.page > 0) request.page = sourcePage = +data.page;
                         oncomplete(data);
                     }
                 }
@@ -420,6 +552,7 @@
                     if (!current() || delivered) return;
                     watchedPayload(data, request, index, function(filtered) {
                         if (!current() || delivered) return;
+                        if (index.mode === 'mark') { deliver(filtered); return; }
                         if (Array.isArray(filtered)) {
                             // Continuations normally consume their internal parts.
                             // Stop a broken source that repeats explicit row cursors.
@@ -442,7 +575,7 @@
                 // Source calls keep their synchronous return value and receiver.
                 // Waiting for the index happens at the callback boundary.
                 var received = [], ready = false, initialCalled = false;
-                watchedIndex(method !== 'list' || !(+request.page > 1), function(value) {
+                watchedIndex(!paginated || !(+request.page > 1), function(value) {
                     index = value; ready = true;
                     received.forEach(function(data) { accept(data, request); }); received = [];
                 });
@@ -463,7 +596,7 @@
                 };
             };
             wrapped._myshowsWatched = true;
-            Lampa.Api[method] = wrapped;
+            hook.api[hook.method] = wrapped;
         });
     }
 
@@ -1468,6 +1601,9 @@
     }
 
     function loadProfileSettings() {
+        if (!hasProfileSetting('myshows_watched_mode')) {
+            setProfileSetting('myshows_watched_mode', watchedMode(), false);
+        }
         // Native Storage treats an unset boolean false fallback as ''. Persist
         // explicit local defaults before SettingsApi registers trigger labels.
         ['myshows_hide_watched', 'myshows_android_tv'].forEach(function(key) {
@@ -1538,7 +1674,7 @@
         }
 
         // These unscoped values are native settings UI mirrors, not sync keys.
-        Lampa.Storage.set('myshows_hide_watched', storableValue(getProfileSetting('myshows_hide_watched', false)), true);
+        Lampa.Storage.set('myshows_watched_mode', watchedMode(), true);
         Lampa.Storage.set('myshows_android_tv',   storableValue(getProfileSetting('myshows_android_tv', false)), true);
         Lampa.Storage.set('myshows_view_in_main',  storableValue(getProfileSetting('myshows_view_in_main',  true)), true);
         Lampa.Storage.set('myshows_button_view',   storableValue(getProfileSetting('myshows_button_view',   true)), true);
@@ -1674,10 +1810,11 @@
 
         Lampa.SettingsApi.addParam({
             component: 'myshows',
-            param: {name: 'myshows_hide_watched', type: 'trigger', default: getProfileSetting('myshows_hide_watched', false)},
-            field: {name: 'Скрывать просмотренное', description: 'Убирать полностью просмотренное в MyShows из обычных каталогов CUB/TMDB. Поиск и личные списки сохраняются.'},
+            param: {name: 'myshows_watched_mode', type: 'select', default: watchedMode(), values: {
+                show: 'Показывать обычно', mark: 'Приглушать и отмечать ✓', hide: 'Скрывать'}},
+            field: {name: 'Просмотренное в MyShows', description: 'Вид просмотренного в обычных каталогах CUB/TMDB. Поиск и личные списки сохраняются.'},
             onChange: function(value) {
-                setProfileSetting('myshows_hide_watched', value, false);
+                setProfileSetting('myshows_watched_mode', value, false);
                 watchedRefresh();
             }
         });
@@ -9095,6 +9232,7 @@
             return;
         }
 
+        watchedStyles();
         // ✅ Глобальный обработчик для ВСЕХ карточек (включая те, что ещё не отрендерены)
         document.addEventListener('visible', function(e) {
             var cardElement = e.target;
@@ -9102,6 +9240,7 @@
             // Проверяем, что это карточка из секции MyShows
             if (cardElement && cardElement.classList.contains('card')) {
                 var cardData = cardElement.card_data;
+                drawWatchedMark(cardElement, cardData);
 
                 // Проверяем наличие кастомных данных MyShows
                 _applyProgressFromMap(cardData);
@@ -9244,6 +9383,7 @@
         addMyShowsToTMDB();
         addMyShowsToCUB();
         patchActivityForMyShows();
+        patchWatchedRecommendations();
         patchWatchedDiscovery();
 
         // Определяем среду через window.lampac_plugin (синхронно)

@@ -8,6 +8,8 @@
     isArray: Array.isArray, getKeys: Object.keys};
   var listener = {send: function() {}}, listener$1 = listener;
   var $ = function(element) {return element;};
+  var Select = {show: function(options) {window.__nativeSelect = options;}};
+  var Controller = {enabled: function() {return {name: 'settings'};}, toggle: function() {}};
   var Lang = {translate: function(value) {
     if (value === '#{settings_param_yes}') return 'Да';
     if (value === '#{settings_param_no}') return 'Нет';

@@ -11,7 +11,7 @@ function launch(options = {}) {
         myshows_token_profile_a: 'test-token', myshows_android_tv_profile_a: 'true',
         myshows_calendar_profile_a: 'false', myshows_sort_order_profile_a: 'alphabet',
         myshows_unwatched_serials_profile_a: {shows: JSON.parse(JSON.stringify(options.cards || []))}, ...options.storage}));
-    const handlers = {}, timers = [], requests = [], calls = [], params = [], notices = [];
+    const handlers = {}, domHandlers = {}, timers = [], requests = [], calls = [], params = [], notices = [];
     const bus = {follow(name, fn) { (handlers[name] ||= []).push(fn); }};
     const element = {length: 0, querySelector: () => null, querySelectorAll: () => [],
         classList: {add(){}, remove(){}, contains(){return false;}}, style: {},
@@ -24,7 +24,7 @@ function launch(options = {}) {
     }});
     const document = {currentScript: null, body: element, head: element,
         documentElement: element, querySelector: () => null, querySelectorAll: () => [],
-        createElement: () => ({...element}), addEventListener(){}, getElementById: () => null};
+        createElement: () => ({...element}), addEventListener(name,fn){(domHandlers[name] ||= []).push(fn);}, getElementById: () => null};
     let profile = 'a', active = null;
     const permit = {account: {profile: {get id() { return profile; }}}};
     function Reguest() {
@@ -83,6 +83,16 @@ function launch(options = {}) {
         Lampa.Storage=context.__nativeSettingsContract.Storage;
         Lampa.SettingsApi.addParam=p=>{params.push(p);context.__nativeSettingsContract.addParam(p);};
     }
+    if (options.recommendations) {
+        Lampa.Arrays={isArray:Array.isArray,isObject:value=>value!==null&&typeof value==='object'&&!Array.isArray(value),
+            insert:(array,index,item)=>array.splice(index,0,item),shuffle:array=>array};
+        Lampa.Router={call(...args){(context.routerCalls ||= []).push(args);}};
+        Lampa.Storage.cache=()=>[];
+        vm.runInNewContext(fs.readFileSync(path.join(__dirname,'fixtures/lampa-recommendations-contract.js'),'utf8'),context);
+        Object.assign(Lampa,context.__nativeRecommendationsContract);
+        if(options.beforeRecommendations)options.beforeRecommendations(Lampa,context);
+        Lampa.Recomends.init();
+    }
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', options.variant || process.env.MYSHOWS_VARIANT || 'myshows.full.js'), 'utf8'), context);
     const run = delay => {const i = timers.findIndex(t => t.delay === delay);
         assert.notEqual(i, -1, 'expected lifecycle timer ' + delay); timers.splice(i,1)[0].fn();};
@@ -96,14 +106,18 @@ function launch(options = {}) {
     const emit = (name, data) => (handlers[name] || []).forEach(fn => fn(data));
     function settingElement(key) {
         const registered=setting(key),events={};
-        const elem={label:'',data(name){return {name:key,type:'toggle',onChange:registered.onChange}[name];},
+        const elem={label:'',data(name){return {name:key,type:registered.param.type==='select'?'select':'toggle',onChange:registered.onChange}[name];},
             attr(){},find(){return {text(value){elem.label=value;}};},
             on(name,fn){events[name]=fn;return elem;},each(fn){fn.call(elem);return elem;},eq(){return elem;}};
         elem.enter=()=>events['hover:enter']({target:elem});return elem;
     }
     const settingLabel=key=>{const elem=settingElement(key);context.__nativeSettingsContract.update(elem);return elem.label;};
     const toggleSetting=key=>{const elem=settingElement(key);context.__nativeSettingsContract.bind(elem);elem.enter();return elem.label;};
-    return {context, data, calls, requests, timers, run, setting, params, answer, answerUrl, changeProfile, notices, emit,settingLabel,toggleSetting,
+    const selectSetting=(key,value)=>{const elem=settingElement(key);context.__nativeSettingsContract.bind(elem);elem.enter();
+        const item=context.__nativeSelect.items.find(item=>item.value===value);assert.ok(item,'native select option '+value);
+        context.__nativeSelect.onSelect(item);return elem.label;};
+    return {context, data, calls, requests, timers, run, setting, params, answer, answerUrl, changeProfile, notices, emit,settingLabel,toggleSetting,selectSetting,
+        emitDom(name,target){(domHandlers[name] || []).forEach(fn=>fn({target}));},
         setActive(value) { active = value; }};
 }
 
@@ -115,8 +129,8 @@ const cards = [
         remaining: 1, watched_count: 1, total_count: 4}
 ];
 
-const localTriggers=['myshows_hide_watched','myshows_android_tv'];
-test('fresh profile renders both native trigger labels as Нет without syncing local preferences',()=>{
+const localTriggers=['myshows_android_tv'];
+test('fresh profile renders Android TV trigger as Нет without syncing local preferences',()=>{
     const app=launch({nativeSettings:true,sync:true,storage:{myshows_android_tv_profile_a:undefined}});app.run(2000);
     for(const key of localTriggers) {
         assert.equal(app.settingLabel(key),'Нет',key+' has a visible native default');
@@ -124,7 +138,7 @@ test('fresh profile renders both native trigger labels as Нет without syncing
         assert.equal(app.context.syncKeys.includes(key),false,'local trigger not registered for synchronization');
     }
 });
-test('native string toggles and cold restart preserve Да and Нет for both local triggers',()=>{
+test('native Android TV string toggles and cold restart preserve Да and Нет',()=>{
     const app=launch({nativeSettings:true,sync:true,storage:{myshows_android_tv_profile_a:undefined}});app.run(2000);
     for(const key of localTriggers) {
         assert.equal(app.toggleSetting(key),'Да');
@@ -151,7 +165,6 @@ test('native profile switch mirrors independent trigger labels and preserves exi
     app.changeProfile('a');
     for(const key of localTriggers)assert.equal(app.settingLabel(key),'Да');
     app.changeProfile('b');
-    assert.equal(app.settingLabel('myshows_hide_watched'),'Нет');
     assert.equal(app.settingLabel('myshows_android_tv'),'Да');
 });
 
@@ -311,7 +324,7 @@ const seenCard = {id:1,title:'Seen',original_title:'Seen',release_date:'2020-01-
 const unseenCard = {id:2,title:'New',release_date:'2021-01-01'};
 function discovery(options={}) {
     const pages=options.pages || [{page:1,total_pages:1,results:[seenCard,unseenCard]}], loads=[];
-    const app=launch({sync:options.sync,activity:options.activity,storage:{myshows_hide_watched_profile_a:'true',...options.storage},
+    const app=launch({beforeRecommendations:options.beforeRecommendations,nativeSettings:options.nativeSettings,recommendations:options.recommendations,sync:options.sync,activity:options.activity,storage:{myshows_hide_watched_profile_a:'true',...options.storage},
         api:{list(request,done,error) {loads.push({...request});
             const page=pages[(request.page || 1)-1];
             if(page instanceof Error) error(page); else done(page);
@@ -325,6 +338,175 @@ function discovery(options={}) {
     return app;
 }
 const topRequest={source:'cub',url:'top/hundred/movie',page:1};
+for(const [legacy,want] of [[true,'hide'],['true','hide'],[false,'show'],['false','show'],[undefined,'show']])
+    test('watched mode migrates legacy '+String(legacy)+' to '+want+' once',()=>{
+        const app=launch({nativeSettings:true,sync:true,storage:{myshows_hide_watched_profile_a:legacy}});app.run(2000);
+        assert.equal(app.context.Lampa.Storage.get('myshows_watched_mode_profile_a'),want);
+        assert.equal(app.settingLabel('myshows_watched_mode'),want==='hide'?'Скрывать':'Показывать обычно');
+        assert.equal(app.context.syncKeys.includes('myshows_watched_mode'),false);
+        assert.equal(app.selectSetting('myshows_watched_mode','mark'),'Приглушать и отмечать ✓');
+        assert.equal((app.context.syncPatches || []).some(args=>args[1]==='myshows_watched_mode_profile_a'),false);
+        const restart=launch({nativeSettings:true,storage:Object.fromEntries(app.data)});restart.run(2000);
+        assert.equal(restart.settingLabel('myshows_watched_mode'),'Приглушать и отмечать ✓','explicit selection outranks legacy on restart');
+    });
+test('native mode select preserves independent profile mirrors and explicit show over legacy true',()=>{
+    const app=launch({nativeSettings:true,storage:{myshows_hide_watched_profile_a:'true',myshows_watched_mode_profile_a:'show',
+        myshows_watched_mode:'hide',myshows_watched_mode_profile_b:'mark',myshows_token_profile_b:'other',myshows_calendar_profile_b:'false'}});
+    app.run(2000);assert.equal(app.settingLabel('myshows_watched_mode'),'Показывать обычно');
+    assert.equal(app.selectSetting('myshows_watched_mode','hide'),'Скрывать');
+    app.changeProfile('b');assert.equal(app.settingLabel('myshows_watched_mode'),'Приглушать и отмечать ✓');
+    app.changeProfile('a');assert.equal(app.settingLabel('myshows_watched_mode'),'Скрывать');
+});
+test('show passes original data through even when legacy hide was enabled',()=>{
+    const payload={page:1,total_pages:3,results:[seenCard]},app=discovery({pages:[payload],storage:{myshows_watched_mode_profile_a:'show'}});
+    let output;app.context.Lampa.Api.list({...topRequest},v=>output=v,assert.fail);
+    assert.equal(output,payload);assert.equal(app.requests.length,0);
+});
+test('mark copies positive cards only and preserves count order pages and native request cursor without draining',()=>{
+    const payload={page:1,total_pages:3,total_results:50,results:[seenCard,unseenCard]},request={...topRequest};
+    const app=discovery({pages:[payload],storage:{myshows_watched_mode_profile_a:'mark'}});let output;
+    app.context.Lampa.Api.list(request,v=>output=v,assert.fail);app.index();
+    assert.deepEqual(Array.from(output.results,c=>c.id),[1,2]);assert.equal(output.page,1);assert.equal(output.total_pages,3);
+    assert.equal(output.total_results,50);assert.equal(request.page,1);assert.equal(app.loads.length,1);
+    assert.ok(output.results[0]._myshows_watched);assert.equal(output.results[1]._myshows_watched,undefined);
+    assert.notEqual(output.results[0],seenCard);assert.equal(seenCard._myshows_watched,undefined);
+});
+test('fully watched mark batch and page return intact without calling continuation or draining',()=>{
+    let nextCalls=0;const row={source:'cub',url:'top/hundred/movie',results:[seenCard]},app=discovery({
+        pages:[{page:1,total_pages:9,results:[seenCard]}],storage:{myshows_watched_mode_profile_a:'mark'},
+        api:{main(req,done){done([row]);return function(){nextCalls++;};}}});let output;
+    app.context.Lampa.Api.main({source:'cub'},v=>output=v,assert.fail);app.index();
+    assert.equal(output.length,1);assert.equal(output[0].results.length,1);assert.equal(nextCalls,0);
+    app.context.Lampa.Api.list({...topRequest},v=>output=v,assert.fail);app.index();
+    assert.equal(output.results.length,1);assert.equal(app.loads.length,1);
+});
+function watchedDomCard(data) {
+    const classes=new Set(['card']),children=[];
+    const node={card_data:data,classList:{add:c=>classes.add(c),remove:c=>classes.delete(c),contains:c=>classes.has(c)},
+        querySelector(selector){return selector==='.card__view'?view:children.find(n=>'.'+n.className===selector)||null;}};
+    const view={appendChild(child){children.push(child);child.remove=()=>children.splice(children.indexOf(child),1);}};
+    return node;
+}
+test('native visible hook marks positive card once and cleans reused DOM and mode changes',()=>{
+    const app=discovery({storage:{myshows_watched_mode_profile_a:'mark'}}),active={...topRequest,component:'category_full'};app.setActive(active);
+    let output;app.context.Lampa.Api.list(active,v=>output=v,assert.fail);app.index();app.run(50);app.run(2000);
+    const node=watchedDomCard(output.results[0]);
+    app.context.document.querySelectorAll=selector=>selector==='.myshows-watched-card'?[node]:[];
+    app.emitDom('visible',node);assert.equal(node.querySelector('.myshows-watched-check')?.textContent,'✓');
+    assert.equal(node.classList.contains('myshows-watched-card'),true);
+    app.emitDom('visible',node);assert.ok(node.querySelector('.myshows-watched-check'));
+    node.card_data=unseenCard;app.emitDom('visible',node);
+    assert.equal(node.querySelector('.myshows-watched-check'),null);assert.equal(node.classList.contains('myshows-watched-card'),false);
+    node.card_data=output.results[0];app.emitDom('visible',node);assert.ok(node.querySelector('.myshows-watched-check'));
+    app.setting('myshows_watched_mode').onChange('show');
+    assert.equal(node.querySelector('.myshows-watched-check'),null);assert.equal(node.classList.contains('myshows-watched-card'),false);
+    app.emitDom('visible',node);assert.equal(node.querySelector('.myshows-watched-check'),null);
+});
+test('mark decoration is removed on profile or account change and stays absent in excluded activities',()=>{
+    for(const change of ['profile','token','personal']) {
+        const app=discovery({sync:true,storage:{myshows_watched_mode_profile_a:'mark',myshows_watched_mode_profile_b:'mark',
+            myshows_token_profile_b:'other',myshows_calendar_profile_b:'false'}}),active={...topRequest,component:'category_full'};
+        app.setActive(active);let output;app.context.Lampa.Api.list(active,v=>output=v,assert.fail);app.index();app.run(50);
+        const node=watchedDomCard(output.results[0]);
+        app.context.document.querySelectorAll=selector=>selector==='.myshows-watched-card'?[node]:[];
+        app.emitDom('visible',node);assert.ok(node.querySelector('.myshows-watched-check'));
+        if(change==='profile')app.changeProfile('b');
+        if(change==='token')app.context.applySync('myshows_token_profile_a','replacement');
+        if(change==='personal')app.setActive({component:'favorite',source:'cub'});
+        app.emitDom('visible',node);assert.equal(node.querySelector('.myshows-watched-check'),null);
+        assert.equal(node.classList.contains('myshows-watched-card'),false);
+    }
+});
+test('mark uses the shared full-series proof and removes marker after a newly released unwatched episode',()=>{
+    const app=discovery({pages:[{results:[tvCard,unseenCard]}],storage:{myshows_watched_mode_profile_a:'mark'}});let output;
+    const request={...topRequest,url:'top/hundred/tv'};
+    app.context.Lampa.Api.list(request,v=>output=v,assert.fail);app.index([],[showSummary]);
+    television(app,[{id:101,airDate:'2020-01-01'}],[{id:101,watchDate:'2020-01-02'}]);
+    assert.ok(output.results[0]._myshows_watched);assert.equal(tvCard._myshows_watched,undefined);
+    app.context.Lampa.Api.list(request,v=>output=v,assert.fail);app.index([],[showSummary]);
+    television(app,[{id:101,airDate:'2020-01-01'},{id:102,airDate:'2020-01-03'}],[{id:101,watchDate:'2020-01-02'}]);
+    assert.equal(output.results[0]._myshows_watched,undefined);assert.deepEqual(Array.from(output.results,c=>c.id),[1,2]);
+});
+test('mark error unknown status and exclusions do not attach metadata',()=>{
+    const app=discovery({storage:{myshows_watched_mode_profile_a:'mark'}});let output;
+    app.context.Lampa.Api.list({...topRequest},v=>output=v,assert.fail);
+    app.answer('profile.WatchedMovies',{error:{code:500}});app.answer('profile.Shows',{result:[]});app.flush();
+    assert.deepEqual(Array.from(output.results,c=>c.id),[1,2]);assert.equal(output.results[0]._myshows_watched,undefined);
+    app.context.Lampa.Api.list({...topRequest,query:'Seen'},v=>output=v,assert.fail);
+    assert.equal(output.results[0]._myshows_watched,undefined);
+});
+for(const mode of ['hide','mark']) test('actual native ContentRows recommendation registration uses '+mode+' and retains custom rows',()=>{
+    const app=discovery({recommendations:true,storage:{myshows_watched_mode_profile_a:mode,recomends_list:[seenCard,unseenCard]},
+        api:{main(request,done){const parts=[];app.context.Lampa.ContentRows.call('main',request,parts);
+            const rows=parts.map(call=>{let row;call(value=>row=value);return row;});done(rows);}}});
+    const {Lampa}=app.context;
+    Lampa.ContentRows.add({name:'custom',title:'Custom',screen:'main',index:9,call(){return done=>done({results:[seenCard],custom:true});}});
+    let output;Lampa.Api.main({source:'cub'},v=>output=v,assert.fail);app.index();
+    assert.equal(output.length,2);assert.equal(output[1].custom,true);assert.equal(output[1].results[0]._myshows_watched,undefined);
+    assert.deepEqual(Array.from(output[0].results,c=>c.id),mode==='hide'?[2]:[2,1]);
+    if(mode==='mark')assert.ok(output[0].results[1]._myshows_watched);
+    output[0].params.emit.onlyMore();assert.equal(app.context.routerCalls[0][0],'recomend');
+    assert.equal(app.context.__recommendationTimers,1,'native initializer is never rerun');
+});
+test('actual built-in recommendations More drains hidden pages, mark keeps native page and order',()=>{
+    for(const mode of ['hide','mark']) {
+        const source=Array.from({length:41},(_,i)=>i===0?unseenCard:{...seenCard,id:100+i});
+        const app=discovery({recommendations:true,storage:{myshows_watched_mode_profile_a:mode,recomends_list:source}});
+        const request={component:'recomend',media:'movie',page:1,activity:{}};app.setActive(request);let output;
+        app.context.Lampa.Recomends.page(request,v=>output=v,assert.fail);app.index();
+        if(mode==='hide'){assert.deepEqual(Array.from(output.results,c=>c.id),[2]);assert.equal(request.page,3);}
+        else {assert.equal(output.results.length,20);assert.equal(request.page,1);assert.ok(output.results[0]._myshows_watched);}
+    }
+});
+test('native recommendation discovery respects disabled visibility and restores exact prototype on no match or throw',()=>{
+    const app=discovery({nativeSettings:true,recommendations:true,storage:{recomends_list:[seenCard],content_rows_recomend_watch:'false'}});
+    const {Lampa}=app.context,get=Lampa.Storage.get,each=vm.runInNewContext('Array.prototype.forEach',app.context);let parts=[];
+    Lampa.ContentRows.call('main',{source:'cub'},parts);assert.equal(parts.length,0);assert.equal(Lampa.Storage.get,get);
+    assert.equal(vm.runInNewContext('Array.prototype.forEach',app.context),each);
+    Lampa.Storage.set('content_rows_recomend_watch','true');
+    Lampa.ContentRows.add({name:'throws',title:'Throws',screen:'main',call(){throw new Error('native row error');}});
+    assert.throws(()=>Lampa.ContentRows.call('main',{source:'cub'},[]),/native row error/);
+    assert.equal(Lampa.Storage.get,get);
+    assert.equal(vm.runInNewContext('Array.prototype.forEach',app.context),each);
+});
+test('native recommendation preserves earlier index0 and later colliding index1 rows with real base parts',()=>{
+    const app=discovery({recommendations:true,storage:{myshows_watched_mode_profile_a:'mark',recomends_list:[seenCard,unseenCard]},
+        beforeRecommendations(Lampa){Lampa.ContentRows.add({name:'earlier',title:'Earlier',index:0,screen:'main',
+            call(){return done=>done({results:[unseenCard],kind:'earlier'});}});},
+        api:{main(request,done){const parts=Array.from({length:6},(_,i)=>call=>call({results:[unseenCard],kind:'base'+i}));
+            app.context.Lampa.ContentRows.call('main',request,parts);done(parts.map(call=>{let row;call(value=>row=value);return row;}));}}});
+    const {Lampa}=app.context,each=vm.runInNewContext('Array.prototype.forEach',app.context);
+    Lampa.ContentRows.add({name:'collision',title:'Collision',screen:'main',index:1,call(){
+        assert.equal(vm.runInNewContext('Array.prototype.forEach',app.context),each,'prototype restored before custom factory');
+        vm.runInNewContext('window.arrayProof=[];[7,8].forEach(function(value,index,array){window.arrayProof.push([value,index,array.length]);});',app.context);
+        return done=>done({results:[seenCard],kind:'collision'});}});
+    let output;Lampa.Api.main({source:'cub'},v=>output=v,assert.fail);app.index();
+    assert.deepEqual(Array.from(output,row=>row.kind||'builtin'),['earlier','collision','builtin','base0','base1','base2','base3','base4','base5']);
+    assert.equal(output[1].results[0]._myshows_watched,undefined);assert.ok(output[2].results[1]._myshows_watched);
+    assert.deepEqual(JSON.parse(JSON.stringify(app.context.arrayProof)),[[7,0,2],[8,1,2]]);
+    assert.equal(vm.runInNewContext('Array.prototype.forEach',app.context),each);
+    const stable=Lampa.ContentRows.call;
+    Lampa.ContentRows.call('main',{source:'cub'},[]);assert.equal(Lampa.ContentRows.call,stable,'registry discovery stops after capture');
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname,'..',process.env.MYSHOWS_VARIANT || 'myshows.full.js'),'utf8'),app.context);
+    assert.equal(Lampa.ContentRows.call,stable);assert.equal(app.context.__recommendationTimers,1);
+});
+test('native recommendations More rejects a pending response after changing requested media',()=>{
+    const app=discovery({recommendations:true,storage:{recomends_list:[seenCard,unseenCard]}});
+    const request={component:'recomend',media:'movie',page:1,activity:{}};app.setActive(request);let delivered=0;
+    app.context.Lampa.Recomends.page(request,()=>delivered++,assert.fail);request.media='tv';app.index();
+    assert.equal(delivered,0);
+});
+test('disabled native row can be discovered after enabling, without exposing patched prototype to custom code',()=>{
+    const app=discovery({nativeSettings:true,recommendations:true,storage:{content_rows_recomend_watch:'false',recomends_list:[seenCard,unseenCard]}});
+    const {Lampa}=app.context,each=vm.runInNewContext('Array.prototype.forEach',app.context);
+    Lampa.ContentRows.add({name:'custom',title:'Custom',screen:'main',call(){
+        assert.equal(vm.runInNewContext('Array.prototype.forEach',app.context),each);
+        return done=>done({results:[unseenCard]});}});
+    Lampa.ContentRows.call('main',{source:'cub'},[]);assert.equal(vm.runInNewContext('Array.prototype.forEach',app.context),each);
+    Lampa.Storage.set('content_rows_recomend_watch','true');const parts=[];
+    Lampa.ContentRows.call('main',{source:'cub'},parts);let row;
+    parts[1](value=>row=value);assert.ok(row._myshows_recommendation);
+});
 test('opt-in Top100 hides confirmed watched movie on a copied payload and preserves return',()=>{
     const payload={page:1,total_pages:1,total_results:2,results:[seenCard,unseenCard]},app=discovery({pages:[payload]});
     let output;
@@ -423,7 +605,7 @@ test('toggle refreshes native catalog once and disabling restores cards in origi
     let refreshes=0;const app=discovery({activity:{refresh(){refreshes++;}}});app.run(2000);
     app.setActive({...topRequest,component:'category_full'});
     let output;app.context.Lampa.Api.list({...topRequest},v=>output=v,assert.fail);app.index();
-    app.setting('myshows_hide_watched').onChange(false);
+    app.setting('myshows_watched_mode').onChange('show');
     assert.equal(refreshes,1);
     app.context.Lampa.Api.list({...topRequest},v=>output=v,assert.fail);
     assert.deepEqual(output.results,[seenCard,unseenCard]);
@@ -566,9 +748,9 @@ for(const method of ['main','category','list']) test('native create-before-push 
     native.context.Lampa.Api[method](target,()=>delivered++,assert.fail);
     native.setActive(target);sourceDone(payload);native.index();
     assert.equal(delivered,1,'response belongs to the newly pushed target');
-    native.run(2000);native.setting('myshows_hide_watched').onChange(false);
+    native.run(2000);native.setting('myshows_watched_mode').onChange('show');
     assert.equal(targetRefreshes,1,'refresh tracks target rather than previous activity');
-    native.setting('myshows_hide_watched').onChange(true);
+    native.setting('myshows_watched_mode').onChange('hide');
     native.context.Lampa.Api[method](target,()=>delivered++,assert.fail);
     native.setActive({component:'search',activity:{}});sourceDone(payload);native.index();
     assert.equal(delivered,1,'next navigation rejects the old target response');

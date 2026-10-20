@@ -46,13 +46,21 @@ Automatic sync of watched series and movies with MyShows.me
 - **Cross-device settings sync (NMSync)** — badges, sorting and other settings apply across all your devices automatically.  
 - **Manual sync with Lampac** — a "Sync" button for a one-time full reconciliation of watched content.  
 
-### Hide watched (optional)
+### Watched in MyShows
 
-The **Скрывать просмотренное** (Hide watched) setting defaults to off. It is
-saved locally per profile/device. When enabled, ordinary CUB/TMDB home rows,
-catalogues, standard discovery lists and Top 100 hide confirmed watched movies
-and completed shows. Search and its More pages, favorites, history, Continue
-watching, MyShows, calendar and custom plugin rows remain complete.
+The **Просмотренное в MyShows** setting is local to this device/profile and
+offers **Показывать обычно** (Show normally), **Приглушать и отмечать ✓**
+(Dim and mark), and **Скрывать** (Hide). Mark keeps the original cards, count,
+order and source pages, adding ✓ and dimming only confirmed watched posters.
+Remote focus restores normal poster brightness without dimming text or the
+focus ring. Hide retains the existing filtered-page draining behavior.
+
+Ordinary CUB/TMDB home rows, catalogues, collections, Top 100 and native
+recommendations/More are covered. Search and its More pages, favorites, history,
+Continue watching, MyShows, calendar and custom rows receive no new mark.
+The default is Show normally. An enabled legacy Hide watched switch migrates
+to Hide; an explicit new mode always wins and persists across restarts/profile
+changes. The setting is excluded from NMSync.
 
 A show is hidden only when at least one episode was watched and every released
 episode ID is confirmed in its viewing history. Future episodes are ignored;
