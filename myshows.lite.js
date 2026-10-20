@@ -954,6 +954,7 @@
         _syncApplying = false;
     }
     function loadProfileSettings() {
+        if (!hasProfileSetting("myshows_android_tv")) setProfileSetting("myshows_android_tv", false, false);
         if (!hasProfileSetting("myshows_view_in_main")) {
             setProfileSetting("myshows_view_in_main", true, false);
         }
@@ -999,6 +1000,7 @@
         if (!hasProfileSetting("myshows_badge_style")) {
             setProfileSetting("myshows_badge_style", "1", false);
         }
+        Lampa.Storage.set("myshows_android_tv", storableValue(getProfileSetting("myshows_android_tv", false)), true);
         Lampa.Storage.set("myshows_view_in_main", storableValue(getProfileSetting("myshows_view_in_main", true)), true);
         Lampa.Storage.set("myshows_button_view", storableValue(getProfileSetting("myshows_button_view", true)), true);
         Lampa.Storage.set("myshows_sort_order", getProfileSetting("myshows_sort_order", "progress"), true);
