@@ -46,13 +46,41 @@ Automatic sync of watched series and movies with MyShows.me
 - **Cross-device settings sync (NMSync)** — badges, sorting and other settings apply across all your devices automatically.  
 - **Manual sync with Lampac** — a "Sync" button for a one-time full reconciliation of watched content.  
 
+### Hide watched (optional)
+
+The **Скрывать просмотренное** (Hide watched) setting defaults to off. It is
+saved locally per profile/device. When enabled, ordinary CUB/TMDB home rows,
+catalogues, standard discovery lists and Top 100 hide confirmed watched movies
+and completed shows. Search and its More pages, favorites, history, Continue
+watching, MyShows, calendar and custom plugin rows remain complete.
+
+A show is hidden only when at least one episode was watched and every released
+episode ID is confirmed in its viewing history. Future episodes are ignored;
+unknown dates, incomplete history and API errors leave the show visible. A new
+released episode returns its card at the next catalogue opening or native
+refresh. The switch and successful watch/status changes refresh ordinary Lampa
+activities. Filtering never changes MyShows marks.
+
+MyShows IDs are never treated as TMDB IDs. Without a verified mapping, matching
+requires a unique media type, literal title and exact year. Unknown or ambiguous
+cards stay visible. Hidden pages are drained until visible cards or real source
+exhaustion; Top 100 is not extended beyond its original hundred. Disabling the
+switch restores the original cards and order.
+
+The in-memory session index is invalidated by profile/token changes, logout and
+successful mark changes. Every catalogue opening/refresh confirms it afresh.
+Only matching shows in the current results request details, with deduplication,
+caching and bounded concurrency. There is no periodic poll. Failed checks show
+a notification and keep cards visible. Arbitrary third-party sources are not
+intercepted.
+
 ### Relevance sorting
 
 Choose **По актуальности** (By relevance) in series sorting. Shows rank by the
 newer of their last episode viewing date and latest released unwatched episode
 date, descending. Ties use alphabetical order. Progress remains the default.
 
-Only this mode requests MyShows viewing history. Dates are stored locally per
+This mode requests MyShows viewing history for sorting. Dates are stored locally per
 profile and retained after completing a show; NP cards without dates use known
 local dates. Successful episode marks update the viewing date; undoing a mark
 reloads history. Request failures retain known dates and cards, while successful

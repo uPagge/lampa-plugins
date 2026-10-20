@@ -34,6 +34,53 @@ public API and existing network callbacks. DOM, Lampa environment, timers,
 network requests and Android native bridge are boundary doubles; plugin internals
 are not replaced or exported for testing. Fixtures contain neutral test data.
 
+## Watched discovery contract
+
+`myshows_hide_watched` is device-local and profile-local, default off; it is not
+an NMSync setting. `Api.main/category/list` wrappers accept only known CUB/TMDB
+discovery requests/rows. The original request's query (including an empty query)
+and source/path determine scope. Personal, search, calendar and custom rows are
+preserved. Shared source responses, row objects and result arrays are never
+modified. The native grid's owned `request.page` is advanced to the last consumed
+source page before delivery because native Pagination ignores `response.page`
+and increments its own request cursor. All other request fields stay unchanged.
+
+Two authenticated reads initialize a separate in-memory index:
+`profile.WatchedMovies` and `profile.Shows`. It never imports the existing
+`myshowsWatched`/badge caches or fuzzy TMDB mapping guesses. A unique literal
+title + exact year + media type match is required. For a candidate show with
+`watching`/`finished` status, `shows.GetById({showId,withEpisodes:true})` and
+`profile.Episodes({showId})` must prove every released episode watched, with at
+least one released episode. Invalid/missing dates or IDs fail open. Calendar-valid
+ISO dates/timestamps with explicit timezone are supported (including `+0300`).
+
+At most two shows run detail/history reads concurrently (four transport reads).
+Repeated cards coalesce by MyShows show ID. Details are cached for the current
+catalogue index, not persisted. A new main/category invocation or list page 1
+reconfirms the index. Profile/token changes and successful mutations invalidate
+proofs; pending replies retain profile, token and generation guards including
+profile ABA. Native activity identity and request fields prevent stale cursor
+writes/repaints after navigation. Recent native catalogue activities are refreshed
+through their own activity handles, including archived pages after playback.
+No refresh is triggered by index completion, avoiding a refresh/load cycle.
+
+Main/category initial callbacks and returned continuations are wrapped. Empty
+filtered batches continue asynchronously; explicit repeated source cursors stop
+draining, with a 100-batch guard for sources omitting cursors. List pages drain
+asynchronously until visible cards or real exhaustion, preserving source totals.
+Repeated source page numbers terminate; later source errors use the original
+error callback. Duplicate source callbacks are ignored. The plugin initialization
+guard also prevents two queued copies of this build from registering listeners
+and settings twice. It does not remove a legacy plugin already running before
+the guarded build; registry migration remains a separate delivery step.
+
+The VM suite covers source/batch continuations, the native grid cursor contract,
+exceptions, immutable payloads, strict Unicode/type/year matching, completeness,
+new releases, request errors, empty success, bounded detail work, settings,
+profile ABA/token changes, successful mark/undo and archived activity refresh.
+These checks do not prove live v3 response shape, DOM focus, CORS or physical TV
+behaviour. Browser/device acceptance remains necessary.
+
 ## Android TV channel contract
 
 The profile/device switch is `myshows_android_tv`, default off. No additional
