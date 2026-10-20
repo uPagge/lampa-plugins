@@ -371,7 +371,7 @@
     }
 
     function watchedRequest(request, method) {
-        if (!request || (request.query !== undefined && request.query !== null) ||
+        if (!request || (request.query !== undefined && request.query !== null && request.query !== '') ||
             /search|favorite|history|continue|myshows|calendar|person|episode|season/.test(request.url || '')) return false;
         if (method === 'recomend') return request.component === 'recomend' && /^(movie|tv)$/.test(request.media || '');
         var source = request.source || Lampa.Storage.field('source');
@@ -601,7 +601,15 @@
                         params.url = row.url; params.source = source; params.page = +row.page;
                         producer = listProducer; receiver = Lampa.Api;
                     } else { watchedPayload(row, request, index, done); return; }
-                    refillPage(row, params, producer, receiver, done, function() {
+                    refillPage(row, params, producer, receiver, function(result) {
+                        // Router uses row.page as the NEW grid's start page.
+                        // Only an existing grid owns the consumed-page cursor.
+                        if (result.page !== row.page) {
+                            result = watchedCopy(result);
+                            result.page = row.page;
+                        }
+                        done(result);
+                    }, function() {
                         Lampa.Noty.show('MyShows: не удалось добрать карточки. Повторите загрузку каталога.');
                         watchedPayload(row, request, index, done);
                     }, sample);

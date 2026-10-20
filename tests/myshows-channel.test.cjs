@@ -644,7 +644,36 @@ for(const method of ['main','category'])test('hide refills a known '+method+' ro
     const pages=[row,refillBatch(2)],app=discovery({pages,api:{[method](request,done){done([row]);return 'native-handle';}}});
     let output;assert.equal(app.context.Lampa.Api[method]({source:'tmdb',...method==='category'?{url:'movie'}:{}},v=>output=v,assert.fail),'native-handle');app.index();
     assert.equal(output[0].results.length,30);assert.equal(output[0].params,row.params);assert.equal(output[0].title,row.title);
-    assert.equal(output[0].page,2);assert.deepEqual(app.loads.map(r=>[r.source,r.url,r.page]),[['tmdb','movie/popular',2]]);
+    assert.equal(output[0].page,1,'row keeps its original More start page');assert.deepEqual(app.loads.map(r=>[r.source,r.url,r.page]),[['tmdb','movie/popular',2]]);
+});
+for(const mode of ['hide','show','mark'])test('actual native main row More starts page1 and '+mode+' owns only its grid refill cursor',()=>{
+    const row={...refillBatch(1),source:'tmdb',url:'movie/popular',title:'Original row'};
+    const pages=[row,refillBatch(2),refillBatch(3,0)],app=discovery({pages,storage:{myshows_watched_mode_profile_a:mode},
+        api:{main(request,done){done([row]);}}});let rows,grid,owned;
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname,'fixtures/lampa-router-contract.js'),'utf8'),app.context);
+    app.context.Lampa.Api.main({source:'tmdb'},v=>rows=v,assert.fail);if(mode!=='show')app.index();
+    assert.equal(rows[0].results.length,mode==='hide'?30:20);assert.equal(row.results.length,20);assert.equal(row.page,1);
+    app.context.Lampa.Activity.push=params=>{owned=params;app.setActive(params);app.context.Lampa.Api.list(params,v=>grid=v,assert.fail);};
+    app.context.__nativeRouterContract.call('category_full',rows[0]);
+    assert.equal(owned.page,1,'real Router must start the new grid at its first source page');
+    assert.equal(owned.query,'','real category_full route initializes an empty non-search query');
+    if(mode!=='show') {
+        assert.ok(app.requests.some(r=>r.body?.method==='profile.WatchedMovies'),'native More requests watched classification');
+        app.index();
+    }
+    assert.equal(grid.results.length,mode==='hide'?30:20);assert.equal(owned.page,mode==='hide'?2:1);
+    assert.deepEqual(Array.from(grid.results,c=>c.id),mode==='hide'?[...row.results.slice(5),...pages[1].results.slice(5)].map(c=>c.id):row.results.map(c=>c.id));
+    if(mode==='hide') {
+        owned.page++;app.context.Lampa.Api.list(owned,v=>grid=v,assert.fail);app.flush();
+        assert.deepEqual(Array.from(grid.results,c=>c.id),pages[2].results.map(c=>c.id));
+        assert.deepEqual(app.loads.map(r=>r.page),[2,1,2,3]);
+    } else assert.deepEqual(app.loads.map(r=>r.page),[1]);
+});
+test('preserving row More page does not write to a frozen empty source payload',()=>{
+    const row=Object.freeze({source:'tmdb',url:'movie/popular',page:1,total_pages:2,results:Object.freeze([])});
+    const app=discovery({api:{main(request,done){done([row]);}}});let output;
+    app.context.Lampa.Api.main({source:'tmdb'},v=>output=v,assert.fail);app.index();
+    assert.equal(output.length,0);assert.equal(app.loads.length,0);assert.equal(row.page,1);
 });
 test('unpageable rows stay filtered without an invented loader and a row refill error returns partial with notice',()=>{
     for(const pageable of [false,true]) {
@@ -841,10 +870,18 @@ test('repeated main source cursor terminates draining before requesting it a thi
     app.context.Lampa.Api.main({source:'tmdb'},v=>output=v,assert.fail);app.index();
     assert.equal(loads,1);assert.equal(output.length,0);
 });
-test('empty search query still exempts source request',()=>{
+test('empty native route query permits discovery filtering while nonempty or search URL stays excluded',()=>{
     const app=discovery();let output;
     app.context.Lampa.Api.list({...topRequest,query:''},v=>output=v,assert.fail);
-    assert.deepEqual(output.results,[seenCard,unseenCard]);assert.equal(app.requests.length,0);
+    assert.ok(app.requests.some(r=>r.body?.method==='profile.WatchedMovies'),'empty native route query must allow classification');app.index();
+    assert.deepEqual(Array.from(output.results,c=>c.id),[2]);
+    for(const request of [{...topRequest,query:' '},{...topRequest,query:'Seen'},{...topRequest,url:'search/movie',query:''}]) {
+        const search=discovery();
+        vm.runInNewContext(fs.readFileSync(path.join(__dirname,'fixtures/lampa-router-contract.js'),'utf8'),search.context);
+        search.context.Lampa.Activity.push=params=>search.context.Lampa.Api.list(params,v=>output=v,assert.fail);
+        search.context.__nativeRouterContract.call('category_full',request);
+        assert.deepEqual(output.results,[seenCard,unseenCard]);assert.equal(search.requests.length,0);
+    }
 });
 test('successful show-status update refreshes discovery, failed update preserves it',()=>{
     let refreshes=0;const app=discovery({activity:{refresh(){refreshes++;}}});
