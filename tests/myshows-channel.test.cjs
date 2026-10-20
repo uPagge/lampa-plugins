@@ -1268,6 +1268,7 @@ function relevanceHome(options = {}) {
         storage:{myshows_sort_order_profile_a:'relevance',...options.storage},
         api:{sources:{tmdb:source,cub:{main(){}}}}});
     vm.runInNewContext(fs.readFileSync(path.join(__dirname,'fixtures/lampa-line-items-contract.js'),'utf8'),app.context);
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname,'fixtures/lampa-activity-replace-contract.js'),'utf8'),app.context);
     const items = app.context.__nativeLineItemsContract;
     function build(data) {
         rows=data;
@@ -1279,10 +1280,11 @@ function relevanceHome(options = {}) {
         items.onInit.call(line);items.onCreate.call(line);
     }
     const target={component:'main',source:'tmdb'};
-    target.activity={...app.context.__nativeActivityLifecycleContract,component:{},loader(){}};
+    target.activity={...app.context.__nativeActivityLifecycleContract,component:{},loader(){},destroy(){}};
     app.setActive(target);app.run(50);
     app.context.Lampa.Activity.own=component=>component===target.activity.component;
-    app.context.Lampa.Activity.replace=()=>{rebuilds++;target.activity.waite_refresh=false;load();};
+    app.context.Lampa.Activity.replace=app.context.__nativeActivityReplaceContract;
+    app.context.__replaceNativePush=()=>{rebuilds++;target.activity={...target.activity,waite_refresh:false};load();};
     function load(){app.context.Lampa.Api.sources.tmdb.main(target,build,assert.fail);}
     load();
     return {...app,target,load,rows:()=>rows,line:()=>line,rebuilds:()=>rebuilds,scroll(){items.onScroll.call(line);}};
@@ -1331,7 +1333,8 @@ function relevanceMore(options={}) {
     const app=launch({bridge:'missing',maker,cards:options.cards||cards,np:options.np,
         storage:{myshows_sort_order_profile_a:'relevance',...options.storage}});
     app.run(50);
-    const target={component:'myshows_unwatched',page:1,activity:{refresh(){app.context.refreshes=(app.context.refreshes||0)+1;}}};
+    app.context.Lampa.Activity.replace=()=>{app.context.refreshes=(app.context.refreshes||0)+1;};
+    const target={component:'myshows_unwatched',page:1,activity:{}};
     app.setActive(target);
     const comp=app.components.myshows_unwatched(target);hooks.onCreate.call(comp);
     return {...app,target,reload(){const comp=app.components.myshows_unwatched(target);hooks.onCreate.call(comp);},built:()=>built};
@@ -1339,7 +1342,7 @@ function relevanceMore(options={}) {
 test('unwatched More rebuild uses newly sorted full list instead of frozen raw cache',()=>{
     const app=relevanceMore();assert.deepEqual(Array.from(app.built().results,c=>c.id),[1,2]);
     answerHistory(app,10,history(null));answerHistory(app,20,history('2026-10-20T12:00:00Z'));
-    assert.equal(app.context.refreshes,1);app.reload();
+    app.run(400);assert.equal(app.context.refreshes,1);app.reload();
     assert.deepEqual(Array.from(app.built().results,c=>c.id),[2,1]);
 });
 test('NP unwatched More relevance uses complete normalized shows and history before paging',()=>{
@@ -1347,7 +1350,7 @@ test('NP unwatched More relevance uses complete normalized shows and history bef
     while(!app.built()) app.answerUrl('/myshows/watching?',{results:cards});
     assert.deepEqual(Array.from(app.built().results,c=>c.id),[1,2]);
     answerHistory(app,10,history(null));answerHistory(app,20,history('2026-10-20T12:00:00Z'));
-    assert.equal(app.context.refreshes,1);app.reload();
+    app.run(400);assert.equal(app.context.refreshes,1);app.reload();
     app.answerUrl('/myshows/watching?',{results:cards});
     assert.deepEqual(Array.from(app.built().results,c=>c.id),[2,1]);
 });
@@ -1366,7 +1369,8 @@ test('MyShows full landing rebuild slices the authoritative relevance first20',(
     const list=Array.from({length:21},(_,i)=>({id:i+1,myshowsId:i+1,name:i===20?'Zulu':'Alpha '+i}));
     const app=launch({bridge:'missing',maker,cards:list,storage:{myshows_sort_order_profile_a:'relevance'}});
     app.run(50);
-    const target={component:'myshows_all',activity:{refresh(){app.context.refreshes=(app.context.refreshes||0)+1;}}};
+    app.context.Lampa.Activity.replace=()=>{app.context.refreshes=(app.context.refreshes||0)+1;};
+    const target={component:'myshows_all',activity:{}};
     app.setActive(target);
     function load(){const comp=app.components.myshows_all(target);hooks.onCreate.call(comp);
         while(app.requests.some(r=>r.body&&['profile.Shows','profile.UnwatchedMovies','profile.WatchedMovies'].includes(r.body.method))) {
@@ -1375,7 +1379,7 @@ test('MyShows full landing rebuild slices the authoritative relevance first20',(
         }}
     load();assert.ok(built);assert.equal(built[0].results.length,20);assert.notEqual(built[0].results[0].id,21);
     for(let id=1;id<=21;id++)answerHistory(app,id,history(id===21?'2026-10-20T12:00:00Z':null));
-    assert.equal(app.context.refreshes,1);load();assert.equal(built[0].results[0].id,21);
+    app.run(400);assert.equal(app.context.refreshes,1);load();assert.equal(built[0].results[0].id,21);
 });
 
 test('live-shape compact offset viewing dates invalidate old zero cache without clearing known dates',()=>{
@@ -1401,4 +1405,20 @@ for(const value of ['2020-01-01T24:00:00+0300','2020-01-01T12:60:00+0300',
     const app=launch({bridge:'missing',cards:[cards[0]],storage:{myshows_sort_order_profile_a:'relevance'}});
     app.context.MyShows.getUnwatchedShowsWithDetails(()=>{});answerHistory(app,20,history(value));
     assert.equal(app.data.get('myshows_relevance_history_profile_a')[20].watch,0);
+});
+
+for(const change of ['navigation','profile','account','source','handle'])test('pending relevance replacement rejects '+change+' at execution time',()=>{
+    const app=relevanceHome();
+    for(let id=1;id<=21;id++)answerHistory(app,id,history(id===21?'2026-10-20T12:00:00Z':null));
+    const oldHandle=app.target.activity;
+    const next={component:'full',activity:{refresh(){assert.fail('next screen refreshed');}}};
+    if(change==='navigation') app.setActive(next);
+    if(change==='profile') app.changeProfile('b');
+    if(change==='account') app.data.set('myshows_token_profile_a','replacement');
+    if(change==='source') app.target.source='cub';
+    if(change==='handle') app.target.activity={};
+    app.run(400);
+    assert.equal(app.rebuilds(),0,'no native replacement after ownership changed');
+    if(change==='navigation')assert.equal(app.context.Lampa.Activity.active(),next,'new screen handle is untouched');
+    if(change!=='handle')assert.equal(app.target.activity,oldHandle);
 });

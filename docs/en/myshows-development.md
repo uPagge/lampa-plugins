@@ -234,10 +234,12 @@ on the next relevance refresh after one minute. There is no new periodic poll.
 Cached and fresh list callbacks return exactly once with the known-date order
 without waiting for history. Cached history and release metadata are applied
 before the first page is sliced. Background completion sorts the complete list;
-if its order changed, the owning current activity refreshes through the native
-ActivitySlide lifecycle. This rebuilds the first 20 membership, lazy Line.items
+if its order changed, a short owned delay rechecks the owning current activity
+before calling public Activity.replace. ActivitySlide.refresh is deliberately
+not used here: its unguarded deferred replacement can replace a screen opened
+during the delay. This rebuilds the first 20 membership, lazy Line.items
 and navigation together instead of only moving existing DOM cards. Native
-refresh retains its own activity state. The ready cache prevents a refresh loop;
+replacement retains its own activity parameters through native extractObject. The ready cache prevents a refresh loop;
 unchanged ordering does not refresh. Request source/URL/page/query, activity
 handle and profile/token/generation must still match. MyShows landing and More
 pass their own request handles; relevance More uses the full newly sorted list,
@@ -247,7 +249,9 @@ existing publication lifecycle and comparator.
 The neutral 21-show regression puts the recent show outside the initial page,
 then exercises unchanged native Line Items init/append/create/scroll functions
 from the hashed snapshot in `lampa-line-items-contract.js` alongside native
-ActivitySlide refresh/runRefresh. It verifies lazy 7-card creation, new first20
+public replace/extractObject in `lampa-activity-replace-contract.js`. Pending-delay
+regressions change navigation, profile, account, source or native handle after
+history completion and assert zero actual native replacements. It verifies lazy 7-card creation, new first20
 membership, subsequent lazy navigation, no Android bridge, warm history,
 unchanged/error history, NP More and stale navigation/profile/account/source.
 DOM rendering/keyboard focus on a real client still require browser acceptance.

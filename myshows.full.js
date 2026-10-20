@@ -3768,13 +3768,22 @@
                 if (getProfileSetting('myshows_sort_order', 'progress') !== 'relevance') return;
                 sortShows(result.shows, 'relevance');
                 if (!delivered || signature() === order) return;
-                var active = Lampa.Activity.active();
-                if (!handle || !active || active.activity !== handle || owner.activity !== handle ||
-                    request.source !== source || request.url !== url || request.page !== page || request.query !== query ||
-                    !/^(main|category|myshows_all|myshows_unwatched)$/.test(active.component || '')) return;
-                // Replacing through ActivitySlide refresh rebuilds native Line.items,
-                // its lazy results and focus/navigation together; DOM sorting cannot.
-                if (typeof handle.refresh === 'function') handle.refresh();
+                function current() {
+                    var active = Lampa.Activity.active();
+                    return channelContextCurrent(requestedContext) &&
+                        getProfileSetting('myshows_sort_order', 'progress') === 'relevance' &&
+                        handle && active && active.activity === handle && owner.activity === handle &&
+                        request.source === source && request.url === url && request.page === page && request.query === query &&
+                        /^(main|category|myshows_all|myshows_unwatched)$/.test(active.component || '');
+                }
+                if (!current()) return;
+                // ActivitySlide.refresh queues an unguarded replacement. Own only
+                // this delay and recheck at execution; never touch native timers.
+                setTimeout(function() {
+                    if (!current() || typeof Lampa.Activity.replace !== 'function') return;
+                    if (handle.component && typeof handle.component.beforeRefresh === 'function') handle.component.beforeRefresh();
+                    if (current()) Lampa.Activity.replace();
+                }, 400);
             });
             sortShows(result.shows, getProfileSetting('myshows_sort_order', 'progress'));
             order = signature();
