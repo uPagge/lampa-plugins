@@ -218,9 +218,15 @@ The opt-in `relevance` mode uses `profile.Episodes({showId})` and the maximum
 valid `watchDate` in its episode summaries. The public MyShows Swagger schema
 (`https://api.myshows.me/shared/doc/swagger.json`, API version 2.0.2) documents
 `watchDate` as a string without a format. The plugin already uses this method
-through its existing v3 transport; an authenticated v3 watch-date response has
-not been checked live. Parsing accepts calendar-valid ISO dates and ISO timestamps
-with an explicit timezone, and ignores ambiguous or future values.
+through its existing v3 transport. An owner-authorized narrow live check confirmed
+compact numeric timezone offsets (`+0300`) in v3 `watchDate`. Parsing accepts
+calendar-valid ISO dates and ISO timestamps with an explicit timezone, including
+both `+0300` and `+03:00`; clock and offset fields are checked before parsing.
+Ambiguous, damaged and future values remain rejected. Persisted history entries
+carry local `dateParser: 2`: older entries are re-read once even if their former
+one-hour cache is fresh, preserving known watch/release dates and local versions
+until a successful response. Failed reads keep dates and the existing retry delay.
+This does not change authentication or synchronize personal history.
 
 History is device-local, profile-scoped, cached for one hour, and deduplicated
 with at most two requests in flight. Failed reads keep the known date and retry
