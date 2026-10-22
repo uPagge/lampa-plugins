@@ -34,6 +34,57 @@ public API and existing network callbacks. DOM, Lampa environment, timers,
 network requests and Android native bridge are boundary doubles; plugin internals
 are not replaced or exported for testing. Fixtures contain neutral test data.
 
+## Ratings contract
+
+The existing JSON-RPC transport sends `manage.RateEpisode({id, rating})` and
+`manage.RateMovie({movieId, rating})`; ratings are integer stars 1 through 5.
+Skip and Back send nothing. The public MyShows client inspected on 2026-10-22
+uses these payloads in its `useRating` component, and its Movie component
+updates the movie to FINISHED after rating. A successful movie rating therefore
+updates the local watched status without an extra SetMovieStatus request.
+An unwatched movie's selector explains this effect. The public API Swagger
+documents RateEpisode's integer 0–5 range; zero is not used by the new selector.
+Public client entry point: [MyShows](https://myshows.me/),
+[published API schema](https://api.myshows.me/shared/doc/swagger.json).
+No live account mutation was used to validate the API contract.
+
+The in-memory queue keeps exact MyShows content IDs, captured titles/episode
+numbers and the existing profile/token/generation context. Only a confirmed
+successful watched mutation produces an automatic prompt. Card opening and
+already-watched timeline updates do not. The independent movie card action
+reuses existing literal title/year lookup and its localized fallback, then the
+same selector. Re-rating bypasses only the automatic prompt's seen guard.
+
+The inspected Lampa 3.3.4 snapshot has SHA-256
+`6caf01e110bc5278db897b8f3c766ee1f2672b432cdcb5c3686f45ca75962bda`.
+Player.destroy clears opened state and hides Select before emitting destroy;
+the player Back callback restores its parent controller after that event.
+One asynchronous queue drain therefore runs after native controller restoration.
+Late watched replies schedule the same drain. Player.start prevents overlays;
+external playback waits for destroy or a confirmed document visibility
+hidden-to-visible transition while Player.opened is false. No periodic polling
+or platform-specific fabricated player event is introduced. Wrappers that emit
+neither lifecycle signal remain a device acceptance limitation.
+
+Native Select hides before onSelect/onBack, and does not restore the previous
+controller itself. The plugin restores the captured enabled controller name.
+The Select hide listener resumes a queue blocked by another selector; preshow
+tracks replacement ownership so stale callbacks cannot act on another dialog.
+Each selector instance accepts only one submission. Profile/account generation
+invalidation clears queued/visible prompts and ignores pending replies,
+including ABA. Context-bound mutations use the existing transport with an
+optional context guard and do not automatically refresh credentials/replay a
+401 response. JSON-RPC errors, false results and transport errors report failure
+and offer an explicit retry or Skip. They never undo watched status.
+
+The complete-plugin VM suite covers movie/episode flow, manual movie card
+re-rating, delayed player exit, multiple episode identities, duplicate Enter,
+Skip/Back, failures and retries, lookup failures, profile/token/logout ABA at
+queued/visible/sending phases, and competing Select ownership. Boundary doubles
+model Lampa's documented event order; actual Select DOM, remote focus and player
+acceptance are verified separately in the browser harness. Physical TV/external
+player integration and real account writes remain outside these VM checks.
+
 ## Watched discovery contract
 
 `myshows_watched_mode` is a native select with `show`, `mark`, `hide` values,

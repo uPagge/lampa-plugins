@@ -46,6 +46,29 @@ Automatic sync of watched series and movies with MyShows.me
 - **Cross-device settings sync (NMSync)** — badges, sorting and other settings apply across all your devices automatically.  
 - **Manual sync with Lampac** — a "Sync" button for a one-time full reconciliation of watched content.  
 
+### MyShows ratings
+
+After a movie or episode is successfully marked watched, the plugin offers a
+rating from 1 to 5. The prompt waits until playback ends, including a successful
+MyShows reply arriving after player closure. Multiple episodes keep separate
+queued prompts with the show title and episode number. Repeated progress updates
+do not offer the same rating again.
+
+**Пропустить** (Skip) and Back dismiss the prompt without writing a rating.
+A rating error keeps the successful watched mark and lets you retry explicitly
+or skip. Switching profiles, logging out or replacing the token cancels old
+prompts and their callbacks.
+
+The movie card's **Оценить в MyShows** (Rate in MyShows) button allows a rating
+to be added or changed, including for an already watched movie. MyShows also
+treats a rated movie as watched; the selector explains this for an unwatched
+movie. The plugin sends only the rating request, without an additional status
+mutation. Rating an entire show from its card is outside this feature.
+
+For an external player, the prompt waits for a confirmed hidden-to-visible
+return to Lampa or a player destroy event. Wrappers that provide neither event
+may not display the deferred prompt; the movie card button remains available.
+
 ### Watched in MyShows
 
 The **Просмотренное в MyShows** setting is local to this device/profile and
