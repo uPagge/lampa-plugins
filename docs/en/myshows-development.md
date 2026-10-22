@@ -36,6 +36,11 @@ are not replaced or exported for testing. Fixtures contain neutral test data.
 
 ## Ratings contract
 
+Movie cards use a distinct outlined star for rating. The movie watched-eye
+action toggles finished/remove; series actions retain their existing semantics.
+A failed undo keeps the existing watched state. Successful undo clears the
+session watched/prompt guards so later playback can mark the movie again.
+
 The existing JSON-RPC transport sends `manage.RateEpisode({id, rating})` and
 `manage.RateMovie({movieId, rating})`; ratings are integer stars 1 through 5.
 Skip and Back send nothing. The public MyShows client inspected on 2026-10-22

@@ -1,6 +1,6 @@
 (function() {
     "use strict";
-    var VERSION = "1.0.18";
+    var VERSION = "1.0.19";
     if (window.__myshowsPluginStarted) return;
     window.__myshowsPluginStarted = VERSION;
     var DEFAULT_ADD_THRESHOLD = "0";
@@ -69,6 +69,7 @@
     }
     var myshows_icon = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="7" width="18" height="12" rx="3" style="fill:none;stroke:currentColor;stroke-width:2"/><line x1="12" y1="5" x2="7" y2="1" style="fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round"/><line x1="12" y1="5" x2="17" y2="1" style="fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round"/><circle cx="12" cy="6" r="1" style="fill:currentColor;stroke:none"/></svg>';
     var watch_icon = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>';
+    var rating_icon = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.4 1.1 6.3-5.6-3-5.6 3 1.1-6.3L2.9 9.6l6.3-.9L12 3z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
     var later_icon = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M8 12l3 3 5-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
     var remove_icon = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M9 9l6 6M15 9l-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
     var cancelled_icon = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M8 12h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
@@ -2928,6 +2929,10 @@
                     };
                     npSetStatus(movieId, movieData.id, "movie", movieMap[status] || "remove");
                     setCardStatusCache(movieData.id, true, status);
+                    if (status === "remove") {
+                        delete checkedMovies[String(movieData.id)];
+                        delete _ratingSeen["movie:" + movieId];
+                    }
                     if (watchedEnabled()) watchedRefresh();
                 }
                 callback(success);
@@ -5705,17 +5710,19 @@
             var btn = $('<div class="full-start__button selector myshows-btn ' + buttonClass + activeClass + '">' + buttonIcon + "<span>" + buttonData.title + "</span>" + "</div>");
             btn.on("hover:enter", function() {
                 var activeStatus = getCardStatusCache(e.data.movie.id, isMovie) || "remove";
-                if (activeStatus === buttonData.status) {
+                var nextStatus = isMovie && buttonData.status === "finished" && activeStatus === "finished" ? "remove" : buttonData.status;
+                if (activeStatus === nextStatus) {
                     Log.info('[MS-guard] кнопка "' + buttonData.title + '" — карточка уже в статусе "' + activeStatus + '", запрос не шлём');
                     updateButtonStates(buttonData.status, isMovie, false);
                     return;
                 }
                 updateButtonStates(null, isMovie, false);
                 var setStatusFunction = isMovie ? setMyShowsMovieStatus : setMyShowsStatus;
-                setStatusFunction(e.data.movie, buttonData.status, function(success) {
+                setStatusFunction(e.data.movie, nextStatus, function(success) {
                     if (success) {
-                        Lampa.Noty.show('Статус "' + buttonData.title + '" установлен на MyShows');
-                        updateButtonStates(buttonData.status, isMovie, false);
+                        var statusTitle = isMovie && nextStatus === "remove" ? "Не смотрел" : buttonData.title;
+                        Lampa.Noty.show('Статус "' + statusTitle + '" установлен на MyShows');
+                        updateButtonStates(nextStatus, isMovie, false);
                         if (!isMovie && activeStatus === "watching" && buttonData.status !== "watching") {
                             removeUnwatchedTraces(e.data.movie);
                         }
@@ -5734,7 +5741,7 @@
             e.object.activity.render().find(".full-start-new__buttons").append(btn);
         });
         if (isMovie) {
-            var ratingButton = $('<div class="full-start__button selector myshows-btn myshows-rate">' + watch_icon + "<span>Оценить в MyShows</span></div>");
+            var ratingButton = $('<div class="full-start__button selector myshows-btn myshows-rate">' + rating_icon + "<span>Оценить в MyShows</span></div>");
             ratingButton.on("hover:enter", function() {
                 rateMovieFromCard(e.data.movie);
             });

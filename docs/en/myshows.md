@@ -48,6 +48,11 @@ Automatic sync of watched series and movies with MyShows.me
 
 ### MyShows ratings
 
+On a movie card, the eye toggles its watched mark: pressing it again removes
+the mark. The separate **Оценить в MyShows** star opens rating. **Не смотрел**
+also removes the watched mark. A failed request keeps the original state.
+For shows, the eye retains the existing Watching action.
+
 After a movie or episode is successfully marked watched, the plugin offers a
 rating from 1 to 5. The prompt waits until playback ends, including a successful
 MyShows reply arriving after player closure. Multiple episodes keep separate
