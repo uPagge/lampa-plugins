@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.0.18';
+    var VERSION = '1.0.19';
 
     // Registry migrations may leave a second copy in the current load queue.
     if (window.__myshowsPluginStarted) return;
@@ -100,6 +100,7 @@
     // Контурные иконки (stroke, без заливки) — чтобы активный цвет/свечение ложились на
     // обводку, а не превращали иконку в сплошной залитый круг.
     var watch_icon = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>';
+    var rating_icon = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.4 1.1 6.3-5.6-3-5.6 3 1.1-6.3L2.9 9.6l6.3-.9L12 3z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
     var later_icon = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M8 12l3 3 5-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
     var remove_icon = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M9 9l6 6M15 9l-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
     var cancelled_icon = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M8 12h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
@@ -3167,6 +3168,10 @@
 
                     // держим кэш статуса карточки в синхроне
                     setCardStatusCache(movieData.id, true, status);
+                    if (status === 'remove') {
+                        delete checkedMovies[String(movieData.id)];
+                        delete _ratingSeen['movie:' + movieId];
+                    }
                     if (watchedEnabled()) watchedRefresh();
                 }
 
@@ -6976,11 +6981,12 @@
                 '</div>');
 
             btn.on('hover:enter', function() {
-                // Если карточка уже в этом статусе — повторный запрос в MyShows бесполезен.
                 // Текущий статус берём из cardStatusCache (синхронизируется при открытии и сменах).
                 // null трактуем как 'remove' (не отслеживается), чтобы повтор "Не смотрю" тоже был no-op.
                 var activeStatus = getCardStatusCache(e.data.movie.id, isMovie) || 'remove';
-                if (activeStatus === buttonData.status) {
+                var nextStatus = isMovie && buttonData.status === 'finished' && activeStatus === 'finished' ?
+                    'remove' : buttonData.status;
+                if (activeStatus === nextStatus) {
                     Log.info('[MS-guard] кнопка "' + buttonData.title + '" — карточка уже в статусе "' + activeStatus + '", запрос не шлём');
                     updateButtonStates(buttonData.status, isMovie, false); // только подсветим активную
                     return;
@@ -6991,10 +6997,11 @@
 
                 var setStatusFunction = isMovie ? setMyShowsMovieStatus : setMyShowsStatus;
 
-                setStatusFunction(e.data.movie, buttonData.status, function(success) {
+                setStatusFunction(e.data.movie, nextStatus, function(success) {
                     if (success) {
-                        Lampa.Noty.show('Статус "' + buttonData.title + '" установлен на MyShows');
-                        updateButtonStates(buttonData.status, isMovie, false);
+                        var statusTitle = isMovie && nextStatus === 'remove' ? 'Не смотрел' : buttonData.title;
+                        Lampa.Noty.show('Статус "' + statusTitle + '" установлен на MyShows');
+                        updateButtonStates(nextStatus, isMovie, false);
                         // Сериал ушёл со "Смотрю" на любой другой статус → сразу убрать метки
                         // и карточку из "Непросмотренные" (не дожидаясь перезагрузки страницы).
                         if (!isMovie && activeStatus === 'watching' && buttonData.status !== 'watching') {
@@ -7023,7 +7030,7 @@
 
         if (isMovie) {
             var ratingButton = $('<div class="full-start__button selector myshows-btn myshows-rate">' +
-                watch_icon + '<span>Оценить в MyShows</span></div>');
+                rating_icon + '<span>Оценить в MyShows</span></div>');
             ratingButton.on('hover:enter', function() { rateMovieFromCard(e.data.movie); });
             container.append(ratingButton);
         }

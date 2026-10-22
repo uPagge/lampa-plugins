@@ -428,6 +428,49 @@ function ratingsMovieCard(options={}) {
     app.flush=()=>{while(app.timers.some(t=>t.delay===0))app.run(0);};
     return app;
 }
+test('movie card rating has a distinct icon from watched status',()=>{
+    const app=ratingsMovieCard();
+    const watched=app.context.ratingButtons.find(b=>b.html.includes('myshows-movie-watched'));
+    const rating=app.context.ratingButtons.find(b=>b.html.includes('myshows-rate'));
+    const icon=button=>button.html.match(/<svg[\s\S]*?<\/svg>/)[0];
+    assert.notEqual(icon(rating),icon(watched),'rating and watched actions must be visually distinct');
+});
+test('movie watched eye toggles finished to remove and back without rating on undo',()=>{
+    const app=ratingsMovieCard({storage:{myshows_movie_status_profile_a:{movies:[
+        {id:501,title:'Film',titleOriginal:'Film',watchStatus:'finished'}]}}});
+    const watched=app.context.ratingButtons.find(b=>b.html.includes('myshows-movie-watched'));
+    const resolve=()=>app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});
+    watched['hover:enter']();resolve();
+    assert.equal(app.requests.find(r=>r.body?.method==='manage.SetMovieStatus').body.params.status,'remove');
+    app.answer('manage.SetMovieStatus',{result:true});app.flush();
+    assert.equal(app.context.ratingDialogs.length,0,'undo must not request a rating');
+    watched['hover:enter']();resolve();
+    assert.equal(app.requests.find(r=>r.body?.method==='manage.SetMovieStatus').body.params.status,'finished');
+    app.answer('manage.SetMovieStatus',{result:true});app.flush();
+    assert.equal(app.context.ratingDialogs.length,1,'new watched mark may offer a rating');
+});
+test('failed movie eye undo keeps its watched state for a retry',()=>{
+    const app=ratingsMovieCard({storage:{myshows_movie_status_profile_a:{movies:[
+        {id:501,title:'Film',titleOriginal:'Film',watchStatus:'finished'}]}}});
+    const watched=app.context.ratingButtons.find(b=>b.html.includes('myshows-movie-watched'));
+    for(let attempt=0;attempt<2;attempt++){
+        watched['hover:enter']();
+        app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});
+        assert.equal(app.requests.find(r=>r.body?.method==='manage.SetMovieStatus').body.params.status,'remove');
+        app.answer('manage.SetMovieStatus',{error:{code:500}});app.flush();
+    }
+    assert.equal(app.context.ratingDialogs.length,0);
+});
+test('movie eye undo allows a later playback mark in the same session',()=>{
+    const app=ratingsMovieCard();app.run(50);rateCardMovie(app);
+    app.context.ratingButtons.find(b=>b.html.includes('myshows-movie-watched'))['hover:enter']();
+    app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});
+    app.answer('manage.SetMovieStatus',{result:true});app.flush();
+    app.emit('start',{card:{id:5,title:'Film',original_title:'Film',release_date:'2020-01-01'}});
+    app.emit('update',{data:{hash:'repeat-film',road:{percent:95}}});
+    app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});
+    assert.equal(app.requests.find(r=>r.body?.method==='manage.SetMovieStatus').body.params.status,'finished');
+});
 test('movie card rating can be changed without sending watched status',()=>{
     const app=ratingsMovieCard();
     const button=app.context.ratingButtons.find(b=>b.html.includes('Оценить в MyShows'));
