@@ -42,6 +42,15 @@ Skip and Back send nothing. The public MyShows client inspected on 2026-10-22
 uses these payloads in its `useRating` component, and its Movie component
 updates the movie to FINISHED after rating. A successful movie rating therefore
 updates the local watched status without an extra SetMovieStatus request.
+It patches the canonical movie_status cache by MyShows ID, retaining unrelated
+movies, and uses the existing NP set_status path for the exact movie/profile.
+The existing full status refresh requires both watched and unwatched snapshots
+to succeed; its confirmed rated movie stays watched even if an immediately
+returned snapshot does not include it yet. Failed reads leave the patched cache
+intact. Context and a movie mutation revision reject obsolete refresh replies,
+including profile ABA and a later explicit status change. Late visual updates
+require the same full-card movie identity, using native card_data/card/movie
+activity fields; another movie or a TV show with the same numeric ID is untouched.
 An unwatched movie's selector explains this effect. The public API Swagger
 documents RateEpisode's integer 0–5 range; zero is not used by the new selector.
 Public client entry point: [MyShows](https://myshows.me/),
