@@ -116,6 +116,144 @@
     var _channelShows = null;
     var _channelPublication = 0;
 
+    // Prompts are session-local and retain the exact watched identity/account.
+    var _ratingQueue = [], _ratingActive = null, _ratingSeen = {};
+    var _ratingPlaying = false, _ratingExternal = false, _ratingAway = false;
+
+    function ratingPlaying() {
+        return _ratingPlaying || (Lampa.Player.opened && Lampa.Player.opened());
+    }
+
+    function ratingLater() { setTimeout(showNextRating, 0); }
+
+    function cancelRatings() {
+        _ratingQueue = [];
+        _ratingSeen = {};
+        var entry = _ratingActive;
+        _ratingActive = null;
+        if (entry && entry.visible && Lampa.Select && Lampa.Select.opened() &&
+            Lampa.Controller.enabled().name === 'select') {
+            Lampa.Select.hide();
+            Lampa.Controller.toggle(entry.controller);
+        }
+    }
+
+    function enqueueRating(type, id, card, context, episode, manual) {
+        if (!id || !channelContextCurrent(context)) return;
+        var key = type + ':' + id;
+        if (!manual && _ratingSeen[key]) return;
+        if ((_ratingActive && _ratingActive.key === key) || _ratingQueue.some(function(e) { return e.key === key; })) return;
+        _ratingSeen[key] = true;
+        var title = card.title || card.name || card.original_title || card.original_name || 'MyShows';
+        if (episode) title += ' · S' + padTwo(episode.seasonNumber) + '/E' + padTwo(episode.episodeNumber);
+        _ratingQueue.push({key:key, type:type, id:id, card:card, title:title, context:context});
+        ratingLater();
+    }
+
+    function showNextRating() {
+        if (_ratingActive || ratingPlaying() || !Lampa.Select || !Lampa.Controller ||
+            (Lampa.Select.opened && Lampa.Select.opened())) return;
+        var entry;
+        while (_ratingQueue.length && !entry) {
+            var next = _ratingQueue.shift();
+            if (channelContextCurrent(next.context)) entry = next;
+        }
+        if (!entry) return;
+        _ratingActive = entry;
+        entry.controller = Lampa.Controller.enabled().name;
+        openRating(entry);
+    }
+
+    function openRating(entry) {
+        if (_ratingActive !== entry || !channelContextCurrent(entry.context) || ratingPlaying()) return;
+        entry.visible = true;
+        var settled = false, items = [];
+        for (var rating = 5; rating >= 1; rating--) items.push({title:rating + ' / 5',rating:rating,
+            subtitle:entry.type === 'movie' && getCardStatusCache(entry.card.id, true) !== 'finished' ?
+                'MyShows также отметит фильм просмотренным' : ''});
+        items.push({title:'Пропустить'});
+        function restore() {
+            entry.visible = false;
+            if (Lampa.Controller.enabled().name === 'select') Lampa.Controller.toggle(entry.controller);
+        }
+        var dialog = {title:'Оценить в MyShows: ' + entry.title, items:items,
+            onBack:function() {
+                if (settled || _ratingActive !== entry || entry.dialog !== dialog) return;
+                settled = true; restore(); _ratingActive = null; ratingLater();
+            },
+            onSelect:function(item) {
+                if (settled || _ratingActive !== entry || entry.dialog !== dialog ||
+                    !channelContextCurrent(entry.context) || ratingPlaying()) return;
+                settled = true; restore();
+                if (item.rating === undefined) { _ratingActive = null; ratingLater(); return; }
+                var params = entry.type === 'movie' ? {movieId:entry.id,rating:item.rating} : {id:entry.id,rating:item.rating};
+                makeMyShowsJSONRPCRequest(entry.type === 'movie' ? 'manage.RateMovie' : 'manage.RateEpisode', params, function(ok, data) {
+                    if (_ratingActive !== entry || !channelContextCurrent(entry.context)) return;
+                    if (!ok || !data || data.error || data.result !== true) {
+                        Lampa.Noty.show('Не удалось сохранить оценку MyShows. Выберите оценку повторно или пропустите.');
+                        _ratingActive = null; _ratingQueue.unshift(entry); ratingLater(); return;
+                    }
+                    if (entry.type === 'movie') {
+                        // MyShows RateMovie also marks a movie watched, as in its official client.
+                        setCardStatusCache(entry.card.id, true, 'finished');
+                        checkedMovies[String(entry.card.id)] = true;
+                        cachedShuffledItems = {};
+                        updateButtonStates('finished', true, false);
+                        if (watchedEnabled()) watchedRefresh();
+                    }
+                    Lampa.Noty.show('Оценка сохранена в MyShows');
+                    _ratingActive = null; ratingLater();
+                }, entry.context);
+            }};
+        entry.dialog = dialog;
+        Lampa.Select.show(dialog);
+    }
+
+    if (Lampa.Select && Lampa.Select.listener) {
+        Lampa.Select.listener.follow('hide', ratingLater);
+        Lampa.Select.listener.follow('preshow', function(event) {
+            if (_ratingActive && _ratingActive.visible && event.active !== _ratingActive.dialog) {
+                _ratingActive.visible = false;
+                _ratingQueue.unshift(_ratingActive);
+                _ratingActive = null;
+            }
+        });
+    }
+
+    function rateMovieFromCard(card) {
+        var context = channelContext();
+        var title = card.original_title || card.title, year = getMovieYear(card);
+        function resolved(id) {
+            if (!channelContextCurrent(context)) return;
+            if (!id) { Lampa.Noty.show('Не удалось найти фильм в MyShows для оценки'); return; }
+            enqueueRating('movie', id, card, context, null, true);
+        }
+        getMovieIdByOriginalTitle(title, year, function(id) {
+            if (!channelContextCurrent(context)) return;
+            if (!id && card.title && card.title !== title) getMovieIdByOriginalTitle(title, year, resolved, card.title);
+            else resolved(id);
+        });
+    }
+
+    if (Lampa.Player && Lampa.Player.listener) {
+        Lampa.Player.listener.follow('start', function() {
+            _ratingPlaying = true; _ratingExternal = false;
+            if (_ratingActive && _ratingActive.visible) {
+                Lampa.Select.hide(); _ratingActive.visible = false;
+                _ratingQueue.unshift(_ratingActive); _ratingActive = null;
+            }
+        });
+        Lampa.Player.listener.follow('external', function() { _ratingPlaying = true; _ratingExternal = true; _ratingAway = false; });
+        Lampa.Player.listener.follow('destroy', function() { _ratingPlaying = false; _ratingExternal = false; ratingLater(); });
+        document.addEventListener('visibilitychange', function() {
+            if (!_ratingExternal) return;
+            if (document.visibilityState === 'hidden') _ratingAway = true;
+            else if (_ratingAway && document.visibilityState === 'visible' && !(Lampa.Player.opened && Lampa.Player.opened())) {
+                _ratingPlaying = false; _ratingExternal = false; ratingLater();
+            }
+        });
+    }
+
     // The discovery index is deliberately separate from the status/badge caches:
     // "watching", fuzzy TMDB mappings and local playback are not proof of completion.
     var _watchedIndex = null;
@@ -720,6 +858,7 @@
 
     function invalidateAndroidChannel(notify) {
         _channelGeneration++;
+        cancelRatings();
         invalidateWatched();
         _channelShows = null;
         clearAndroidChannel(notify);
@@ -1546,6 +1685,8 @@
 
     // Функция для выполнения запросов с автоматическим обновлением токена
     function makeAuthenticatedRequest(options, callback, errorCallback) {
+        var context = options.context;
+        if (context && !channelContextCurrent(context)) return;
         var token = getProfileSetting('myshows_token', '');
 
         if (!token) {
@@ -1559,6 +1700,11 @@
         options.headers[AUTHORIZATION] = 'Bearer ' + token;
 
         network.silent(API_URL, function(data) {
+            // Context-bound mutations never refresh credentials/retry in another account.
+            if (context) {
+                if (channelContextCurrent(context) && callback) callback(data);
+                return;
+            }
             // Проверяем JSON-RPC ошибки
             if (data && data.error && data.error.code === 401) {
                 tryAuthFromSettings(function(newToken) {
@@ -1581,6 +1727,10 @@
                 if (callback) callback(data);
             }
         }, function(xhr) {
+            if (context) {
+                if (channelContextCurrent(context) && errorCallback) errorCallback(new Error('HTTP ' + xhr.status));
+                return;
+            }
             if (xhr.status === 401) {
                 tryAuthFromSettings(function(newToken) {
                     if (newToken) {
@@ -1618,11 +1768,12 @@
         });
     }
 
-    function makeMyShowsJSONRPCRequest(method, params, callback) {
+    function makeMyShowsJSONRPCRequest(method, params, callback, context) {
         makeMyShowsRequest({
             method: 'POST',
             headers: JSON_HEADERS,
-            body: createJSONRPCRequest(method, params)
+            body: createJSONRPCRequest(method, params),
+            context: context
         }, callback);
     }
 
@@ -2938,10 +3089,13 @@
 
     ////// Статус фильмов. (Смотрю, Буду смотреть, Не смотрел) //////
     function setMyShowsMovieStatus(movieData, status, callback) {
+        var context = channelContext();
+        var ratingCard = {id:movieData.id,title:movieData.title,original_title:movieData.original_title};
         var title = movieData.original_title || movieData.title;
         var year = getMovieYear(movieData);
 
         getMovieIdByOriginalTitle(title, year, function(movieId) {
+            if (!channelContextCurrent(context)) return;
             if (movieId || !movieData.title || movieData.title === title) {
                 setStatus(movieId);
                 return;
@@ -2954,6 +3108,7 @@
         });
 
         function setStatus(movieId) {
+            if (!channelContextCurrent(context)) return;
             if (!movieId) {
                 callback(false);
                 return;
@@ -2963,6 +3118,7 @@
                     movieId: movieId,
                     status: status
             }, function(success, data) {
+                if (!channelContextCurrent(context)) return;
 
                 if (success && data && data.result) {
                     // Сбрасываем кеш
@@ -2974,6 +3130,7 @@
                     // Если фильм отмечен как просмотренный, добавляем в историю
                     if (status === 'finished') {
                         addToHistory(movieData);
+                        enqueueRating('movie', movieId, ratingCard, context);
                     }
 
                     // isNpConnected(): сразу обновляем одну запись в базе
@@ -2986,7 +3143,7 @@
                 }
 
                 callback(success);
-            });
+            }, context);
         }
     }
 
@@ -3672,13 +3829,20 @@
             // Список непросмотренных содержит только сериалы в статусе "Смотрю", поэтому
             // для "Хочу посмотреть"/"Бросил"/без статуса проверять список бессмысленно — отмечаем всегда.
             var markEpisode = function(reason) {
+                if (!channelContextCurrent(channelRequest)) return;
+                var ratingCard = {id:card.id,name:card.name,title:card.title,original_name:card.original_name};
+                var mapping = Lampa.Storage.get(MAP_KEY, {});
+                var episode = mapping[episodeMapKey(String(card.id), hash)];
+                var ratingEpisode = episode && {seasonNumber:episode.seasonNumber,episodeNumber:episode.episodeNumber};
                 Log.info('[MS-guard] Отправляем CheckEpisode для episodeId ' + episodeId + ' (' + reason + ', percent=' + percent + ')');
                 checkEpisodeMyShows(episodeId, function(success) {
+                    if (!channelContextCurrent(channelRequest)) return;
                     if (!success) {
                         Log.warn('[MS-guard] ❌ CheckEpisode для episodeId ' + episodeId + ' не удался — повторим на следующем тике');
                         return;
                     }
                     checkedEpisodes[episodeId] = true;
+                    enqueueRating('episode', episodeId, ratingCard, channelRequest, ratingEpisode);
                     delete _unwatchedEpisodeIds[parseInt(episodeId)]; // сразу убрать из in-memory set
                     Log.info('[MS-guard] ✅ episodeId ' + episodeId + ' отмечен успешно — больше к API не обращаемся');
                     // Сериал не в "Смотрю" (Бросил/Хочу посмотреть/нет статуса) → переводим в "Смотрю".
@@ -6828,6 +6992,13 @@
 
             e.object.activity.render().find('.full-start-new__buttons').append(btn);
         });
+
+        if (isMovie) {
+            var ratingButton = $('<div class="full-start__button selector myshows-btn myshows-rate">' +
+                watch_icon + '<span>Оценить в MyShows</span></div>');
+            ratingButton.on('hover:enter', function() { rateMovieFromCard(e.data.movie); });
+            container.append(ratingButton);
+        }
 
         // Общая логика инициализации контроллера
         if (window.Lampa && window.Lampa.Controller) {

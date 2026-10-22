@@ -60,7 +60,13 @@ function launch(options = {}) {
         localStorage: {getItem: key => data.has(key) ? JSON.stringify(data.get(key)) : null,
             removeItem: key => data.delete(key), setItem: (key,value) => data.set(key,value)},
         sessionStorage: {getItem: () => null, removeItem(){}, setItem(){}},
-        $: () => jq, setTimeout(fn, delay) {const t = {fn, delay}; timers.push(t); return t;},
+        $: value => {
+            if (options.ratings && typeof value === 'string' && value.includes('full-start__button')) {
+                const button={html:value,on(name,fn){this[name]=fn;return this;}};
+                (context.ratingButtons ||= []).push(button);return button;
+            }
+            return jq;
+        }, setTimeout(fn, delay) {const t = {fn, delay}; timers.push(t); return t;},
         clearTimeout(t) {const i = timers.indexOf(t); if(i >= 0) timers.splice(i,1);},
         location: {origin: 'https://example.invalid', reload(){}}, appready: true};
     if (options.np) {context.IS_NP = true;
@@ -96,6 +102,18 @@ function launch(options = {}) {
         Object.assign(Lampa,context.__nativeRecommendationsContract);
         if(options.beforeRecommendations)options.beforeRecommendations(Lampa,context);
         Lampa.Recomends.init();
+    }
+    if (options.ratings) {
+        context.ratingDialogs = []; context.controller = 'content'; context.selectOpen = false;
+        Lampa.Controller = {enabled: () => ({name: context.controller}), toggle: name => {context.controller = name;},
+            collectionSet(){}, collectionFocus(){}};
+        const selectHandlers={};
+        Lampa.Select = {listener:{follow(name,fn){(selectHandlers[name] ||= []).push(fn);}},
+            opened: () => context.selectOpen, hide: () => {context.selectOpen = false;(selectHandlers.hide || []).forEach(fn=>fn({active:context.selectDialog}));},
+            show(dialog) {(selectHandlers.preshow || []).forEach(fn=>fn({active:dialog}));
+                context.selectDialog=dialog;context.ratingDialogs.push(dialog);context.selectOpen = true;context.controller = 'select';}};
+        Lampa.Player.opened = () => context.playing === true;
+        Lampa.Favorite = {add(){}};
     }
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', options.variant || process.env.MYSHOWS_VARIANT || 'myshows.full.js'), 'utf8'), context);
     const run = delay => {const i = timers.findIndex(t => t.delay === delay);
@@ -321,6 +339,153 @@ test('logout rejects a pending episode-mark publication after token restoration'
 });
 
 module.exports = {launch, cards};
+
+// Ratings exercise registered timeline/player/full handlers, never private exports.
+function ratingsEpisode() {
+    const card = {id:1,name:'Alpha',original_name:'Alpha',myshowsId:10,remaining:2,
+        progress_marker:'0/2',unwatchedEpisodes:[{id:101},{id:102}]};
+    const app = launch({ratings:true,sync:true,cards:[card],storage:{
+        myshows_serial_status_profile_a:{shows:[{id:10,title:'Alpha',watchStatus:'watching'}]},
+        myshows_hash_map:{'1:first':{tmdbId:1,episodeId:101,seasonNumber:1,episodeNumber:1,airDate:'2020-01-01',timestamp:Date.now()},
+            '1:second':{tmdbId:1,episodeId:102,seasonNumber:1,episodeNumber:2,airDate:'2020-01-02',timestamp:Date.now()}}}});
+    app.run(50);app.emit('full',{type:'complite',data:{movie:card}});
+    app.card=card;
+    app.context.playing=true;app.emit('start',{card});
+    app.mark=hash=>app.emit('update',{data:{hash,road:{percent:100}}});
+    app.leave=()=>{app.context.playing=false;app.emit('destroy',{});app.flush();};
+    app.flush=()=>{while(app.timers.some(t=>t.delay===0))app.run(0);};
+    app.choose=value=>{const dialog=app.context.ratingDialogs.at(-1);assert.ok(dialog,'rating selector is shown');
+        const item=dialog.items.find(i=>value==='skip'?i.rating===undefined:i.rating===value);
+        assert.ok(item,'rating option exists');app.context.selectOpen=false;dialog.onSelect(item);app.flush();return dialog;};
+    return app;
+}
+test('ratings wait for player destroy and preserve distinct episode identities and labels',()=>{
+    const app=ratingsEpisode();app.mark('first');app.answer('manage.CheckEpisode',{result:true});
+    app.mark('first');app.mark('second');app.answer('manage.CheckEpisode',{result:true});
+    assert.equal(app.context.ratingDialogs.length,0,'no overlay during playback');app.leave();
+    assert.match(app.context.ratingDialogs[0].title,/Alpha.*S01\/E01/);
+    const dialog=app.choose(4);dialog.onSelect(dialog.items.find(i=>i.rating===4));
+    const rating=app.requests.filter(r=>r.body?.method==='manage.RateEpisode');
+    assert.equal(rating.length,1,'duplicate Enter does not write twice');
+    assert.deepEqual(rating[0].body.params,{id:101,rating:4});app.answer('manage.RateEpisode',{result:true});app.flush();
+    assert.match(app.context.ratingDialogs.at(-1).title,/Alpha.*S01\/E02/);app.choose('skip');
+    assert.equal(app.context.controller,'content');assert.equal(app.requests.filter(r=>r.body?.method==='manage.CheckEpisode').length,0);
+});
+test('late watched success after destroy still offers an episode rating',()=>{
+    const app=ratingsEpisode();app.mark('first');app.leave();app.answer('manage.CheckEpisode',{result:true});app.flush();
+    assert.equal(app.context.ratingDialogs.length,1);const d=app.context.ratingDialogs[0];
+    app.context.selectOpen=false;d.onBack();app.flush();assert.equal(app.context.controller,'content');
+    assert.equal(app.requests.filter(r=>r.body?.method==='manage.RateEpisode').length,0);
+});
+for(const result of [{result:false},{error:{code:500}},{error:{code:401}}])test('rating failure preserves watched and permits an explicit retry '+JSON.stringify(result),()=>{
+    const app=ratingsEpisode();app.mark('first');app.answer('manage.CheckEpisode',{result:true});app.leave();app.choose(5);
+    app.answer('manage.RateEpisode',result);app.flush();
+    assert.ok(app.notices.some(n=>/оценк.*повтор|повтор.*оценк/i.test(n)),'actionable rating error');
+    assert.equal(app.requests.filter(r=>r.body?.method==='manage.UnCheckEpisode').length,0);
+    app.mark('first');assert.equal(app.requests.filter(r=>r.body?.method==='manage.CheckEpisode').length,0);
+    app.choose(3);assert.equal(app.requests.filter(r=>r.body?.method==='manage.RateEpisode').length,1);
+});
+for(const phase of ['queued','visible','sending'])for(const change of ['profileABA','tokenABA','logout'])test('rating context cancels '+phase+' on '+change,()=>{
+    const app=ratingsEpisode();app.run(2000);app.mark('first');app.answer('manage.CheckEpisode',{result:true});
+    let stale;if(phase!=='queued'){app.leave();stale=app.context.ratingDialogs[0];}
+    if(phase==='sending')app.choose(5);
+    if(change==='profileABA'){app.changeProfile('b');app.changeProfile('a');}
+    if(change==='tokenABA'){app.context.applySync('myshows_token_profile_a','replacement');app.context.applySync('myshows_token_profile_a','test-token');}
+    if(change==='logout'){app.params.find(p=>p.field.name==='Выйти из MyShows').onChange();app.data.set('myshows_token_profile_a','test-token');}
+    if(stale)stale.onSelect(stale.items.find(i=>i.rating===5));
+    if(phase==='sending'){const count=app.notices.length;app.answer('manage.RateEpisode',{error:{code:401}});app.flush();
+        assert.equal(app.notices.length,count,'stale response has no UI side effect');}
+    else {app.leave();assert.equal(app.requests.filter(r=>r.body?.method==='manage.RateEpisode').length,0);}
+    assert.equal(app.context.selectOpen,false,'stale selector is removed');
+});
+test('movie watched success offers independent rating without another status mutation',()=>{
+    const app=launch({ratings:true});const card={id:5,title:'Film',original_title:'Film',release_date:'2020-01-01'};
+    app.context.MyShows.setStatus(card,'finished',true,()=>{});
+    app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});
+    app.answer('manage.SetMovieStatus',{result:true});while(app.timers.some(t=>t.delay===0))app.run(0);
+    const dialog=app.context.ratingDialogs[0];assert.ok(dialog,'movie prompt');assert.match(dialog.title,/Film/);
+    app.context.selectOpen=false;dialog.onSelect(dialog.items.find(i=>i.rating===4));
+    assert.deepEqual(app.requests.find(r=>r.body?.method==='manage.RateMovie').body.params,{movieId:501,rating:4});
+    assert.equal(app.requests.filter(r=>r.body?.method==='manage.SetMovieStatus').length,0);
+});
+function ratingsMovieCard() {
+    const app=launch({ratings:true});const card={id:5,title:'Film',original_title:'Film',release_date:'2020-01-01'};
+    const container={length:1,stored:{},data(key,value){if(value!==undefined)this.stored[key]=value;return this.stored[key];},
+        find:()=>({length:0,filter(){return this;}}),append(){},addClass(){}};
+    const render={find:()=>container,querySelectorAll:()=>[]};
+    app.setActive({movie:card,activity:{render:()=>render}});
+    app.emit('full',{type:'complite',data:{movie:card},object:{activity:{render:()=>render}}});
+    // full's status reads can load caches; finish the native completion timer.
+    while(app.timers.some(t=>t.delay===100))app.run(100);
+    app.flush=()=>{while(app.timers.some(t=>t.delay===0))app.run(0);};
+    return app;
+}
+test('movie card rating can be changed without sending watched status',()=>{
+    const app=ratingsMovieCard();
+    const button=app.context.ratingButtons.find(b=>b.html.includes('Оценить в MyShows'));
+    assert.ok(button,'movie card has rating button');
+    button['hover:enter']();
+    if(app.requests.some(r=>r.body?.method==='movies.GetCatalog'))app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});
+    app.flush();let dialog=app.context.ratingDialogs.at(-1);assert.ok(dialog);
+    app.context.selectOpen=false;dialog.onSelect(dialog.items.find(i=>i.rating===2));
+    app.answer('manage.RateMovie',{result:true});app.flush();
+    button['hover:enter']();
+    if(app.requests.some(r=>r.body?.method==='movies.GetCatalog'))app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});
+    app.flush();dialog=app.context.ratingDialogs.at(-1);app.context.selectOpen=false;dialog.onSelect(dialog.items.find(i=>i.rating===5));
+    assert.equal(app.requests.filter(r=>r.body?.method==='manage.SetMovieStatus').length,0);
+    assert.deepEqual(app.requests.find(r=>r.body?.method==='manage.RateMovie').body.params,{movieId:501,rating:5});
+});
+test('external player waits for confirmed hidden to visible return',()=>{
+    const app=ratingsEpisode();app.context.playing=false;app.emit('external',{});
+    app.mark('first');app.answer('manage.CheckEpisode',{result:true});app.flush();
+    assert.equal(app.context.ratingDialogs.length,0);
+    app.context.document.visibilityState='visible';app.emitDom('visibilitychange');app.flush();
+    assert.equal(app.context.ratingDialogs.length,0,'visible alone cannot prove player return');
+    app.context.document.visibilityState='hidden';app.emitDom('visibilitychange');
+    app.context.document.visibilityState='visible';app.emitDom('visibilitychange');app.flush();
+    assert.equal(app.context.ratingDialogs.length,1);
+});
+test('pending watched rating retains the title captured before the reply',()=>{
+    const app=ratingsEpisode();app.mark('first');app.card.name='Another show';
+    app.answer('manage.CheckEpisode',{result:true});app.leave();
+    assert.match(app.context.ratingDialogs[0].title,/Alpha.*S01\/E01/);
+});
+test('automatic movie rating waits for destroy and late successful mark',()=>{
+    const app=launch({ratings:true});const card={id:5,title:'Film',original_title:'Film',release_date:'2020-01-01'};
+    app.run(50);
+    app.context.playing=true;app.emit('start',{card});app.emit('update',{data:{hash:'movie',road:{percent:100}}});
+    app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});
+    assert.equal(app.context.ratingDialogs.length,0);app.context.playing=false;app.emit('destroy',{});
+    while(app.timers.some(t=>t.delay===0))app.run(0);
+    app.answer('manage.SetMovieStatus',{result:true});while(app.timers.some(t=>t.delay===0))app.run(0);
+    assert.equal(app.context.ratingDialogs.length,1);
+    app.emit('update',{data:{hash:'movie',road:{percent:100}}});
+    assert.equal(app.requests.filter(r=>r.body?.method==='manage.SetMovieStatus').length,0);
+});
+for(const response of [{error:{code:500}},{result:false}])test('failed watched mark never offers rating '+JSON.stringify(response),()=>{
+    const app=ratingsEpisode();app.mark('first');app.answer('manage.CheckEpisode',response);app.leave();
+    assert.equal(app.context.ratingDialogs.length,0);
+});
+test('failed movie card lookup reports failure without rating or watched mutations',()=>{
+    const app=ratingsMovieCard();app.context.ratingButtons.find(b=>b.html.includes('Оценить в MyShows'))['hover:enter']();
+    app.answer('movies.GetCatalog',{result:[]});app.flush();
+    assert.equal(app.context.ratingDialogs.length,0);assert.ok(app.notices.some(n=>/найти фильм/.test(n)));
+    assert.equal(app.requests.filter(r=>r.body?.method?.startsWith('manage.')).length,0);
+});
+test('ratings wait for an existing native selector and resume on its hide event',()=>{
+    const app=ratingsEpisode();app.context.Lampa.Select.show({title:'Other',items:[]});
+    app.mark('first');app.answer('manage.CheckEpisode',{result:true});app.leave();
+    assert.equal(app.context.ratingDialogs.length,1);
+    app.context.Lampa.Select.hide();app.context.controller='content';app.flush();
+    assert.match(app.context.ratingDialogs.at(-1).title,/Alpha.*S01\/E01/);
+});
+test('replaced rating selector cannot submit or close an unrelated selector on profile switch',()=>{
+    const app=ratingsEpisode();app.mark('first');app.answer('manage.CheckEpisode',{result:true});app.leave();
+    const stale=app.context.ratingDialogs.at(-1);app.context.Lampa.Select.show({title:'Other',items:[]});
+    stale.onSelect(stale.items.find(i=>i.rating===5));
+    assert.equal(app.requests.filter(r=>r.body?.method==='manage.RateEpisode').length,0);
+    app.changeProfile('b');assert.equal(app.context.selectOpen,true,'unrelated selector keeps ownership');
+});
 
 // Discovery filtering exercises the exported Api boundary of the complete plugin.
 const watchedMovie = {id:91,title:'Seen',titleOriginal:'Seen',year:2020};
