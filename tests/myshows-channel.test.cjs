@@ -461,6 +461,17 @@ test('failed movie eye undo keeps its watched state for a retry',()=>{
     }
     assert.equal(app.context.ratingDialogs.length,0);
 });
+test('failed undo restores watched highlight after rating an initially unwatched movie',()=>{
+    const app=ratingsMovieCard();rateCardMovie(app);
+    const classes=new Set(['myshows-movie-watched','myshows-active']);
+    const button={querySelector:()=>null,classList:{contains:c=>classes.has(c),add:c=>classes.add(c),remove:c=>classes.delete(c)}};
+    app.setActive({component:'full',card:{id:5,title:'Film',media_type:'movie'},
+        activity:{render:()=>({querySelectorAll:()=>[button]})}});
+    app.context.ratingButtons.find(b=>b.html.includes('myshows-movie-watched'))['hover:enter']();
+    app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});
+    app.answer('manage.SetMovieStatus',{error:{code:500}});app.flush();
+    assert.equal(classes.has('myshows-active'),true,'failed undo restores pre-request watched highlight');
+});
 test('movie eye undo allows a later playback mark in the same session',()=>{
     const app=ratingsMovieCard();app.run(50);rateCardMovie(app);
     app.context.ratingButtons.find(b=>b.html.includes('myshows-movie-watched'))['hover:enter']();

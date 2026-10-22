@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.0.19';
+    var VERSION = '1.0.20';
 
     // Registry migrations may leave a second copy in the current load queue.
     if (window.__myshowsPluginStarted) return;
@@ -7014,7 +7014,7 @@
                         }
                     } else {
                         Lampa.Noty.show('Ошибка установки статуса');
-                        updateButtonStates(currentStatus, isMovie, false);
+                        updateButtonStates(isMovie ? activeStatus : currentStatus, isMovie, false);
                     }
                 });
             });

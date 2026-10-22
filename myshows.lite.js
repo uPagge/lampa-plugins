@@ -1,6 +1,6 @@
 (function() {
     "use strict";
-    var VERSION = "1.0.19";
+    var VERSION = "1.0.20";
     if (window.__myshowsPluginStarted) return;
     window.__myshowsPluginStarted = VERSION;
     var DEFAULT_ADD_THRESHOLD = "0";
@@ -5731,7 +5731,7 @@
                         }
                     } else {
                         Lampa.Noty.show("Ошибка установки статуса");
-                        updateButtonStates(currentStatus, isMovie, false);
+                        updateButtonStates(isMovie ? activeStatus : currentStatus, isMovie, false);
                     }
                 });
             });
