@@ -1,6 +1,6 @@
 (function() {
     "use strict";
-    var VERSION = "1.0.17";
+    var VERSION = "1.0.18";
     if (window.__myshowsPluginStarted) return;
     window.__myshowsPluginStarted = VERSION;
     var DEFAULT_ADD_THRESHOLD = "0";
@@ -186,7 +186,8 @@
                         setCardStatusCache(entry.card.id, true, "finished");
                         checkedMovies[String(entry.card.id)] = true;
                         cachedShuffledItems = {};
-                        updateButtonStates("finished", true, false);
+                        var active = Lampa.Activity.active && Lampa.Activity.active();
+                        if (active && active.movie && isMovieContent(active.movie) && String(active.movie.id) === String(entry.card.id)) updateButtonStates("finished", true, false);
                         if (watchedEnabled()) watchedRefresh();
                     }
                     Lampa.Noty.show("Оценка сохранена в MyShows");

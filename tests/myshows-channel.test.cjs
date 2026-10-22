@@ -445,6 +445,24 @@ for(const close of ['back','skip'])test('manual movie rating '+close+' before vi
     app.answer('manage.SetMovieStatus',{result:true});app.flush();
     assert.equal(app.context.ratingDialogs.length,2,'confirmed watched mark still offers rating');
 });
+for(const current of [
+    {name:'another movie',movie:{id:6,title:'Other film',media_type:'movie'},method:'movie',repaint:false},
+    {name:'TV with colliding id',movie:{id:5,name:'Other show',media_type:'tv'},method:'tv',repaint:false},
+    {name:'the rated movie',movie:{id:5,title:'Film',media_type:'movie'},method:'movie',repaint:true}
+])test('late movie rating repaints only its own active card: '+current.name,()=>{
+    const app=ratingsMovieCard();app.context.ratingButtons.find(b=>b.html.includes('Оценить в MyShows'))['hover:enter']();
+    app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});app.flush();
+    const dialog=app.context.ratingDialogs.at(-1);app.context.selectOpen=false;dialog.onSelect(dialog.items.find(i=>i.rating===4));
+    const classes=new Set(['myshows-movie-watched']);let writes=0;
+    const button={querySelector:()=>null,classList:{contains:c=>classes.has(c),
+        add(c){writes++;classes.add(c);},remove(c){writes++;classes.delete(c);}}};
+    app.setActive({component:'full',method:current.method,movie:current.movie,
+        activity:{render:()=>({querySelectorAll:()=>[button]})}});
+    app.answer('manage.RateMovie',{result:true});app.flush();
+    assert.equal(writes>0,current.repaint,'unrelated active card must not be repainted');
+    assert.equal(classes.has('myshows-active'),current.repaint);
+    assert.ok(app.notices.includes('Оценка сохранена в MyShows'),'rating success still reported');
+});
 test('external player waits for confirmed hidden to visible return',()=>{
     const app=ratingsEpisode();app.context.playing=false;app.emit('external',{});
     app.mark('first');app.answer('manage.CheckEpisode',{result:true});app.flush();
