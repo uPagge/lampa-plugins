@@ -435,6 +435,16 @@ test('movie card rating can be changed without sending watched status',()=>{
     assert.equal(app.requests.filter(r=>r.body?.method==='manage.SetMovieStatus').length,0);
     assert.deepEqual(app.requests.find(r=>r.body?.method==='manage.RateMovie').body.params,{movieId:501,rating:5});
 });
+for(const close of ['back','skip'])test('manual movie rating '+close+' before viewing does not consume the later watched offer',()=>{
+    const app=ratingsMovieCard();app.context.ratingButtons.find(b=>b.html.includes('Оценить в MyShows'))['hover:enter']();
+    app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});app.flush();
+    const first=app.context.ratingDialogs.at(-1);app.context.selectOpen=false;
+    if(close==='back')first.onBack();else first.onSelect(first.items.find(i=>i.rating===undefined));app.flush();
+    app.context.MyShows.setStatus({id:5,title:'Film',original_title:'Film',release_date:'2020-01-01'},'finished',true,()=>{});
+    app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});
+    app.answer('manage.SetMovieStatus',{result:true});app.flush();
+    assert.equal(app.context.ratingDialogs.length,2,'confirmed watched mark still offers rating');
+});
 test('external player waits for confirmed hidden to visible return',()=>{
     const app=ratingsEpisode();app.context.playing=false;app.emit('external',{});
     app.mark('first');app.answer('manage.CheckEpisode',{result:true});app.flush();

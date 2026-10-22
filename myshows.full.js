@@ -143,7 +143,7 @@
         var key = type + ':' + id;
         if (!manual && _ratingSeen[key]) return;
         if ((_ratingActive && _ratingActive.key === key) || _ratingQueue.some(function(e) { return e.key === key; })) return;
-        _ratingSeen[key] = true;
+        if (!manual) _ratingSeen[key] = true;
         var title = card.title || card.name || card.original_title || card.original_name || 'MyShows';
         if (episode) title += ' · S' + padTwo(episode.seasonNumber) + '/E' + padTwo(episode.episodeNumber);
         _ratingQueue.push({key:key, type:type, id:id, card:card, title:title, context:context});
