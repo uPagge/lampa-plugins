@@ -119,6 +119,7 @@
     // Prompts are session-local and retain the exact watched identity/account.
     var _ratingQueue = [], _ratingActive = null, _ratingSeen = {};
     var _ratingPlaying = false, _ratingExternal = false, _ratingAway = false;
+    var _movieStatusRevision = 0;
 
     function ratingPlaying() {
         return _ratingPlaying || (Lampa.Player.opened && Lampa.Player.opened());
@@ -198,9 +199,11 @@
                         setCardStatusCache(entry.card.id, true, 'finished');
                         checkedMovies[String(entry.card.id)] = true;
                         cachedShuffledItems = {};
+                        reconcileRatedMovie(entry);
                         var active = Lampa.Activity.active && Lampa.Activity.active();
-                        if (active && active.movie && isMovieContent(active.movie) &&
-                            String(active.movie.id) === String(entry.card.id)) updateButtonStates('finished', true, false);
+                        var activeCard = active && (active.card_data || active.card || active.movie);
+                        if (active && active.component === 'full' && activeCard && isMovieContent(activeCard) &&
+                            String(activeCard.id) === String(entry.card.id)) updateButtonStates('finished', true, false);
                         if (watchedEnabled()) watchedRefresh();
                     }
                     Lampa.Noty.show('Оценка сохранена в MyShows');
@@ -234,6 +237,28 @@
             if (!channelContextCurrent(context)) return;
             if (!id && card.title && card.title !== title) getMovieIdByOriginalTitle(title, year, resolved, card.title);
             else resolved(id);
+        });
+    }
+
+    function reconcileRatedMovie(entry) {
+        var revision = ++_movieStatusRevision;
+        var movie = {id:entry.id,title:entry.card.title,titleOriginal:entry.card.original_title || entry.card.title,
+            watchStatus:'finished'};
+        function current() { return channelContextCurrent(entry.context) && revision === _movieStatusRevision; }
+        function refresh() {
+            if (current()) fetchStatusMovies(function() {}, movie, entry.context);
+        }
+        npSetStatus(entry.id, entry.card.id, 'movie', 'watched');
+        if (useNpServer()) { refresh(); return; }
+        var local = getStorageMode() === 'local';
+        loadCacheFromServer('movie_status', 'movies', function(cached) {
+            if (!current()) return;
+            // A failed remote read is not an empty library: do not replace it with one movie.
+            if ((!cached || !Array.isArray(cached.movies)) && !local) { refresh(); return; }
+            var movies = cached && Array.isArray(cached.movies) ? cached.movies.slice() : [];
+            movies = movies.filter(function(item) { return String(item.id) !== String(movie.id); });
+            movies.push(movie);
+            saveCacheToServer({movies:movies,timestamp:Date.now()}, 'movie_status', refresh, entry.context.profile);
         });
     }
 
@@ -3127,6 +3152,7 @@
                     cachedShuffledItems = {};
 
                     // Обновляем кэш фильмов при успешном изменении статуса
+                    _movieStatusRevision++;
                     fetchStatusMovies(function(data) {})
 
                     // Если фильм отмечен как просмотренный, добавляем в историю
@@ -7166,13 +7192,23 @@
         })
     }
 
-    function fetchStatusMovies(callback) {
-        var startProfile = getProfileId();
+    function fetchStatusMovies(callback, confirmedMovie, context) {
+        context = context || channelContext();
+        var revision = _movieStatusRevision;
+        function current() { return channelContextCurrent(context) && revision === _movieStatusRevision; }
         getWatchedMovies(function(watchedData) {
+            if (!current()) return;
             getUnwatchedMovies(function(unwatchedData) {
+                if (!current()) return;
+                if (!watchedData || !Array.isArray(watchedData.result) ||
+                    !unwatchedData || !Array.isArray(unwatchedData.result)) { callback(null); return; }
                 var movies = [];
                 processMovieData(watchedData, 'finished', movies);
                 processMovieData(unwatchedData, 'later', movies);
+                if (confirmedMovie) {
+                    movies = movies.filter(function(item) { return String(item.id) !== String(confirmedMovie.id); });
+                    movies.push(confirmedMovie);
+                }
 
                 var statusData = {
                     movies: movies,
@@ -7181,8 +7217,8 @@
 
                 // Кэш — в профиль-источник; callback с результатом только если профиль тот же
                 saveCacheToServer(statusData, 'movie_status', function(result) {
-                    callback(getProfileId() === startProfile ? result : null);
-                }, startProfile)
+                    if (current()) callback(result);
+                }, context.profile)
             });
         });
     }

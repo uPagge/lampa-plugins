@@ -56,7 +56,10 @@ function launch(options = {}) {
         clearPluginChannel(id) {calls.push({clear: id}); return options.reject !== true;}
     };
     const context = {Lampa, AndroidJS, document, console: {log(){}, info(){}, warn(){}, error(){}, debug(){}},
-        URLSearchParams, XMLHttpRequest: function() { this.open = this.setRequestHeader = this.send = () => {}; },
+        URLSearchParams, XMLHttpRequest: function() {
+            this.open = (method,url) => {this.method=method;this.url=url;};this.setRequestHeader=()=>{};
+            this.send = body => {if(options.ratings)(context.xhrRequests ||= []).push({url:this.url,method:this.method,body:body?JSON.parse(body):undefined});};
+        },
         localStorage: {getItem: key => data.has(key) ? JSON.stringify(data.get(key)) : null,
             removeItem: key => data.delete(key), setItem: (key,value) => data.set(key,value)},
         sessionStorage: {getItem: () => null, removeItem(){}, setItem(){}},
@@ -408,15 +411,20 @@ test('movie watched success offers independent rating without another status mut
     assert.deepEqual(app.requests.find(r=>r.body?.method==='manage.RateMovie').body.params,{movieId:501,rating:4});
     assert.equal(app.requests.filter(r=>r.body?.method==='manage.SetMovieStatus').length,0);
 });
-function ratingsMovieCard() {
-    const app=launch({ratings:true});const card={id:5,title:'Film',original_title:'Film',release_date:'2020-01-01'};
+function ratingsMovieCard(options={}) {
+    const app=launch({...options,ratings:true,storage:{myshows_movie_status_profile_a:{movies:[]},...options.storage}});
+    const card={id:5,title:'Film',original_title:'Film',release_date:'2020-01-01'};
+    function openCard() {
     const container={length:1,stored:{},data(key,value){if(value!==undefined)this.stored[key]=value;return this.stored[key];},
         find:()=>({length:0,filter(){return this;}}),append(){},addClass(){}};
     const render={find:()=>container,querySelectorAll:()=>[]};
-    app.setActive({movie:card,activity:{render:()=>render}});
+    app.setActive({component:'full',card:card,activity:{render:()=>render}});
     app.emit('full',{type:'complite',data:{movie:card},object:{activity:{render:()=>render}}});
+    if(options.np)app.answerUrl('/myshows/status?',{cache_type:'watched'});
     // full's status reads can load caches; finish the native completion timer.
     while(app.timers.some(t=>t.delay===100))app.run(100);
+    }
+    openCard();app.openCard=openCard;
     app.flush=()=>{while(app.timers.some(t=>t.delay===0))app.run(0);};
     return app;
 }
@@ -448,7 +456,9 @@ for(const close of ['back','skip'])test('manual movie rating '+close+' before vi
 for(const current of [
     {name:'another movie',movie:{id:6,title:'Other film',media_type:'movie'},method:'movie',repaint:false},
     {name:'TV with colliding id',movie:{id:5,name:'Other show',media_type:'tv'},method:'tv',repaint:false},
-    {name:'the rated movie',movie:{id:5,title:'Film',media_type:'movie'},method:'movie',repaint:true}
+    {name:'the rated movie',movie:{id:5,title:'Film',media_type:'movie'},method:'movie',repaint:true},
+    {name:'native card-only rated movie',movie:{id:5,title:'Film',media_type:'movie'},method:'movie',field:'card',repaint:true},
+    {name:'native card_data rated movie',movie:{id:5,title:'Film',media_type:'movie'},method:'movie',field:'card_data',repaint:true}
 ])test('late movie rating repaints only its own active card: '+current.name,()=>{
     const app=ratingsMovieCard();app.context.ratingButtons.find(b=>b.html.includes('Оценить в MyShows'))['hover:enter']();
     app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});app.flush();
@@ -456,7 +466,7 @@ for(const current of [
     const classes=new Set(['myshows-movie-watched']);let writes=0;
     const button={querySelector:()=>null,classList:{contains:c=>classes.has(c),
         add(c){writes++;classes.add(c);},remove(c){writes++;classes.delete(c);}}};
-    app.setActive({component:'full',method:current.method,movie:current.movie,
+    app.setActive({component:'full',method:current.method,[current.field || 'movie']:current.movie,
         activity:{render:()=>({querySelectorAll:()=>[button]})}});
     app.answer('manage.RateMovie',{result:true});app.flush();
     assert.equal(writes>0,current.repaint,'unrelated active card must not be repainted');
@@ -472,6 +482,54 @@ test('external player waits for confirmed hidden to visible return',()=>{
     app.context.document.visibilityState='hidden';app.emitDom('visibilitychange');
     app.context.document.visibilityState='visible';app.emitDom('visibilitychange');app.flush();
     assert.equal(app.context.ratingDialogs.length,1);
+});
+function rateCardMovie(app) {
+    app.context.ratingButtons.findLast(b=>b.html.includes('Оценить в MyShows'))['hover:enter']();
+    app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});app.flush();
+    const d=app.context.ratingDialogs.at(-1);app.context.selectOpen=false;d.onSelect(d.items.find(i=>i.rating===4));
+    app.answer('manage.RateMovie',{result:true});app.flush();
+}
+for(const old of ['remove','later'])test('successful movie rating persists watched cache across reopen from '+old,()=>{
+    const app=ratingsMovieCard({storage:{myshows_movie_status_profile_a:{movies:[
+        {id:999,title:'Unrelated',titleOriginal:'Unrelated',watchStatus:'later'},
+        ...(old==='later'?[{id:501,title:'Film',titleOriginal:'Film',watchStatus:'later'}]:[])]}}});
+    rateCardMovie(app);
+    const movies=app.data.get('myshows_movie_status_profile_a').movies;
+    assert.equal(movies.find(m=>m.id===501)?.watchStatus,'finished');
+    assert.equal(movies.find(m=>m.id===999)?.watchStatus,'later','unrelated movie retained');
+    app.openCard();app.context.ratingButtons.findLast(b=>b.html.includes('Оценить в MyShows'))['hover:enter']();
+    app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});app.flush();
+    assert.equal(app.context.ratingDialogs.at(-1).items[0].subtitle,'','reopen recognizes watched rating');
+});
+for(const response of [{error:{code:500}},{result:[]}])test('rating status refresh keeps confirmed movie on '+JSON.stringify(response),()=>{
+    const app=ratingsMovieCard();rateCardMovie(app);
+    app.answer('profile.WatchedMovies',response);app.answer('profile.UnwatchedMovies',{result:[]});app.flush();
+    assert.equal(app.data.get('myshows_movie_status_profile_a').movies.find(m=>m.id===501)?.watchStatus,'finished');
+});
+test('movie rating uses existing NP status write with exact profile and movie identity',()=>{
+    const app=ratingsMovieCard({np:true});rateCardMovie(app);
+    const write=app.context.xhrRequests?.find(r=>r.url.includes('/myshows/set_status?'));
+    assert.ok(write,'NP receives rated movie status');assert.match(write.url,/profile_id=a/);
+    assert.deepEqual(write.body,{myshows_id:501,tmdb_id:5,media_type:'movie',cache_type:'watched'});
+    assert.equal(app.requests.filter(r=>r.body?.method==='manage.SetMovieStatus').length,0);
+});
+test('rating status refresh cannot write after profile ABA',()=>{
+    const app=ratingsMovieCard();rateCardMovie(app);const before=JSON.stringify(app.data.get('myshows_movie_status_profile_a'));
+    app.changeProfile('b');app.changeProfile('a');
+    app.answer('profile.WatchedMovies',{result:[{id:777,title:'Late',titleOriginal:'Late'}]});
+    if(app.requests.some(r=>r.body?.method==='profile.UnwatchedMovies'))app.answer('profile.UnwatchedMovies',{result:[]});
+    assert.equal(JSON.stringify(app.data.get('myshows_movie_status_profile_a')),before);
+});
+test('older rating refresh cannot overwrite a newer explicit movie status',()=>{
+    const app=ratingsMovieCard();rateCardMovie(app);
+    app.context.MyShows.setStatus({id:5,title:'Film',original_title:'Film',release_date:'2020-01-01'},'later',true,()=>{});
+    app.answer('movies.GetCatalog',{result:[{movie:{id:501,title:'Film',titleOriginal:'Film',year:2020}}]});
+    app.answer('manage.SetMovieStatus',{result:true});
+    app.answer('profile.WatchedMovies',{result:[{id:501,title:'Film',titleOriginal:'Film'}]});
+    assert.equal(app.requests.filter(r=>r.body?.method==='profile.UnwatchedMovies').length,0,'obsolete refresh stops');
+    app.answer('profile.WatchedMovies',{result:[]});
+    app.answer('profile.UnwatchedMovies',{result:[{id:501,title:'Film',titleOriginal:'Film'}]});
+    assert.equal(app.data.get('myshows_movie_status_profile_a').movies.find(m=>m.id===501).watchStatus,'later');
 });
 test('pending watched rating retains the title captured before the reply',()=>{
     const app=ratingsEpisode();app.mark('first');app.card.name='Another show';
